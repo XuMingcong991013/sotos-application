@@ -13,6 +13,7 @@ import re
 
 from processor.andaotuo_processor import extract_info_from_filename, excel_num_to_date, read_data_from_excel, process_single_file
 
+
 # 设置页面配置
 st.set_page_config(
     page_title="工时统计工具", 
@@ -24,7 +25,7 @@ st.title("📝工时统计工具")
 
 st.markdown("""
 ## 使用说明
-1. 选择待处理项目名称
+1. 选择待处理项目点
 2. 上传Excel文件(支持多文件批量上传，文件命名按照"员工姓名工时表-公司名-年月"的格式)
 3. 点击"开始处理"按钮
 """)

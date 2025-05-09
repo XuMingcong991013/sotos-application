@@ -117,7 +117,5 @@ def process_single_file(file_path, wrong_employees: list):
     return df_result_single, wrong_employees
 
 
-# wrong_employees=[]
-# df_result_single, wrong_employees = compare_worktime(file_path='D:/sotos工作资料/202503 安道拓（重庆）/邹同伟工时表-重庆安道拓-2025年03月.xlsx', wrong_employees=wrong_employees)
-# print(wrong_employees)
+
 
