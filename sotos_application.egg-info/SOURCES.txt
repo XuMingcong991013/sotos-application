@@ -1,0 +1,9 @@
+README.md
+setup.py
+sotos_application.egg-info/PKG-INFO
+sotos_application.egg-info/SOURCES.txt
+sotos_application.egg-info/dependency_links.txt
+sotos_application.egg-info/top_level.txt
+worktime_application/__init__.py
+worktime_application/call_llm.py
+worktime_application/worktime_streamlitapp.py
