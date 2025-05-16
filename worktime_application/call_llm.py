@@ -84,3 +84,6 @@ def get_completions(user_prompt, system_prompt, stream=False, temperature=0.95, 
 #     )
 #     return completion.model_dump_json()
  
+
+# res =  get_completions(user_prompt="你叫什么名字", system_prompt="你的名字是秦彻")
+# print(res)

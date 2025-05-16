@@ -22,14 +22,51 @@ setup_logging(
 )
 
 
+def calculate_project_worktime(detail_worktime_data):
+    """按照项目名称做分组，计算每个项目的overtime_hours和total_hours总和"""
+    if not isinstance(detail_worktime_data, dict):
+        logging.error(f"无效的工时数据格式，期望字典类型，实际得到: {type(detail_worktime_data)}")
+        return {}
+        
+    grouped = {}
+    
+    for date, details in detail_worktime_data.items():
+        # 跳过空字典或缺失关键字段的条目
+        if not details or 'project_name' not in details:
+            continue
 
-def process_worktime_file(file_path: str, error_employee_list: list):
+        project_name = details["project_name"]
+        if not project_name:  # 跳过空项目名的条目
+            continue
+        
+        # 确保有必要的字段
+        if 'overtime_hours' not in details or 'total_hours' not in details:
+            continue
+            
+        if project_name not in grouped:
+            grouped[project_name] = []
+            
+        grouped[project_name].append({
+            "date": date,
+            "overtime_hours": details["overtime_hours"],
+            "total_hours": details["total_hours"]
+        })
+    result = {
+        project_name: {
+            'overtime_hours': sum(item['overtime_hours'] for item in details),
+            'total_hours': sum(item['total_hours'] for item in details)
+        } for project_name, details in grouped.items()
+    
+    }
+    return result
+
+
+
+def process_worktime_file(file_path: str):
     """
     处理工时文件并提取相关信息
     """
     logging.info(f"开始处理工时文件：{file_path}")
-    if error_employee_list is None:
-        error_employee_list = []
     
     # 提取Excel文件文本
     markdown_text = excel_to_markdown(file_path)
@@ -49,9 +86,11 @@ def process_worktime_file(file_path: str, error_employee_list: list):
             company_name = response_1.get("company_name", "")
             logging.info(f"解析模型返回：\n - 员工姓名：{employee_name},  - 公司名称：{company_name}")
         except Exception as e:
-            logging.info(f"模型未返回合法JSON数据。错误：{e}")
+            logging.error(f"解析模型返回失败，原始返回内容：{response_1}\n错误详情：{str(e)}")
+            raise ValueError(f"无法解析模型返回的JSON数据: {str(e)}")
     except Exception as e:
-        logging.info(f"模型返回错误：{e}")
+        logging.error(f"模型调用失败，请求参数：{user_prompt_1[:200]}...\n错误详情：{str(e)}")
+        raise ValueError(f"模型调用失败: {str(e)}")
     
     # 2.从表格文本中，提取工时明细数据,并按照项目名称做分组
     logging.info("\n\n从表格文本中，提取工时明细数据,并按照项目名称做分组...")
@@ -65,41 +104,20 @@ def process_worktime_file(file_path: str, error_employee_list: list):
             response_2 = json.loads(response_2)
             logging.info(f"解析模型返回, 源数据表中的工时明细数据：{response_2}")
         except Exception as e:
-            logging.info(f"模型未返回合法JSON数据。错误：{e}")
+            logging.error(f"解析模型返回失败，原始返回内容：{response_2}\n错误详情：{str(e)}。尝试再次请求模型")
+            try:
+                response_2 = get_completions(user_prompt=user_prompt_2, system_prompt=system_prompt_2)
+                response_2 = response_2["choices"][0]["message"]["content"]
+                response_2 = json.loads(response_2)
+            except Exception as e:
+                logging.error(f"再次请求模型失败，请求参数：{user_prompt_2[:200]}...\n错误详情：{str(e)}")
+            raise ValueError(f"无法解析模型返回的JSON数据: {str(e)}")
     except Exception as e:
-        logging.info(f"模型返回错误：{e}")
+        logging.error(f"模型调用失败，请求参数：{user_prompt_2[:200]}...\n错误详情：{str(e)}")
+        raise ValueError(f"模型调用失败: {str(e)}")
 
     
-    # 3.根据分组的工时明细数据，计算各项目的总工时和加班工时
-    def calculate_project_worktime(detail_worktime_data):
-        """
-        计算每个项目的overtime_hours和total_hours总和
-        """
-        result = {}
-        
-        for project_name, daily_data in detail_worktime_data.items():
-            overtime_sum = 0
-            total_hours_sum = 0
-            
-            # 遍历项目的每日数据
-            for date, hours_data in daily_data.items():
-                # 处理可能的拼写错误 (overtours -> overtime_hours)
-                if 'overtime_hours' in hours_data:
-                    overtime_sum += hours_data['overtime_hours']
-                elif 'overtours' in hours_data:  # 处理可能的拼写错误
-                    overtime_sum += hours_data['overtours']
-                    
-                # 累加总工时
-                if 'total_hours' in hours_data:
-                    total_hours_sum += hours_data['total_hours']
-            
-            # 将计算结果存储到结果字典中
-            result[project_name] = {
-                'overtime_hours_sum': overtime_sum,
-                'total_hours_sum': total_hours_sum
-            } 
-        return result
-    
+    # 3.根据工时明细数据，按照项目名称做分组，计算各项目的总工时和加班工时  
     grouped_worktime_data = calculate_project_worktime(detail_worktime_data=response_2)
     logging.info(f"工时分组数据统计：{grouped_worktime_data}")
     
@@ -115,9 +133,11 @@ def process_worktime_file(file_path: str, error_employee_list: list):
             response_3 = json.loads(response_3)
             logging.info(f"源数据表中的工时汇总数据：{response_3}")
         except Exception as e:
-            logging.info(f"模型未返回合法JSON数据。错误：{e}")
+            logging.error(f"解析模型返回失败，原始返回内容：{response_3}\n错误详情：{str(e)}")
+            raise ValueError(f"无法解析模型返回的JSON数据: {str(e)}")
     except Exception as e:
-        logging.info(f"模型返回错误：{e}")
+        logging.error(f"模型调用失败，请求参数：{user_prompt_3[:200]}...\n错误详情：{str(e)}")
+        raise ValueError(f"模型调用失败: {str(e)}")
 
     
     # 5.将原表中的汇总工时数据与统计的工时数据作比较，判断是否一致，一致是True，不一致是False
@@ -132,16 +152,20 @@ def process_worktime_file(file_path: str, error_employee_list: list):
     
     # 错误人员明细：
     if not compare_result:
-        error_employee_list.append(employee_name)
-    logging.info(f"错误人员明细：{error_employee_list}")
+        error_name = employee_name
+        logging.info(f"错误人员明细：{error_name}")
+    else:
+        error_name = ""
+        logging.info("无错误人员")
 
     result_json = {"emplyee_name": employee_name, "company_name":company_name, "data": grouped_worktime_data}
     
-    return result_json, error_employee_list
+    return result_json, error_name
 
 
 
 
-
-
+# result_json, error_name = process_worktime_file(file_path="C:/Users/admin/Desktop/工时测试数据/蔡爽工时表-重庆安道拓-2025年03月.xlsx")
+# print("result_json",result_json)
+# print("error_name:", error_name)
 
