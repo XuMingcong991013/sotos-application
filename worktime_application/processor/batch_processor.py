@@ -36,15 +36,16 @@ def batch_process_worktime_files(folder_path):
         logging.info(f"文件处理进度：{i} / {files_num}")
         i += 1
             
-        result_json, error_name = process_worktime_file(file_path=file_path)
+        # result_json, error_name = process_worktime_file(file_path=file_path)
+        result_json = process_worktime_file(file_path=file_path)
         merged_result.append(result_json)
-        if error_name:
-            error_employee_list.append(error_name)
+        # if error_name:
+        #     error_employee_list.append(error_name)
     
-    return merged_result, error_employee_list
+    return merged_result
 
 
-def convert_worktime_result_to_dataframe(data_list, error_employee_list):
+def convert_worktime_result_to_dataframe(data_list):
     """
     将员工工时数据的结果列表转换为DataFrame。返回pd.DataFrame: 包含5列(员工姓名,公司名称,项目名称,加班,工时)的DataFrame
     """
@@ -67,10 +68,10 @@ def convert_worktime_result_to_dataframe(data_list, error_employee_list):
             })
     result_df = pd.DataFrame(processed_data)
     result_df = result_df.sort_values(by=['公司名称', '员工姓名']).reset_index(drop=True)
-    error_df = pd.DataFrame(error_employee_list, columns=['错误人员明细'])
-    return result_df, error_df
+    # error_df = pd.DataFrame(error_employee_list, columns=['错误人员明细'])
+    return result_df
 
-def save_to_excel_with_sheets(result_df, error_df, file_name):
+def save_to_excel_with_sheets(result_df, file_name):
     """将两个DataFrame保存到同一个Excel的不同Sheet中：result_df: 要保存到"统计结果"Sheet的DataFrame，error_df: 要保存到"出错人员明细"Sheet的DataFrame"""
     try:
         # 创建一个新的Excel writer
@@ -83,12 +84,12 @@ def save_to_excel_with_sheets(result_df, error_df, file_name):
             index=False
         )
         
-        # 保存第二个sheet
-        error_df.to_excel(
-            writer,
-            sheet_name="出错人员明细",
-            index=False
-        )
+        # # 保存第二个sheet
+        # error_df.to_excel(
+        #     writer,
+        #     sheet_name="出错人员明细",
+        #     index=False
+        # )
         
         # 获取workbook对象并确保可见性
         workbook = writer.book
@@ -106,8 +107,8 @@ def save_to_excel_with_sheets(result_df, error_df, file_name):
 
 
 # Example usage:
-folder_path = "D:/sotos工作资料/test/6"
+folder_path = "D:/sotos工作资料/test/1"
 
-result, error_employee_list = batch_process_worktime_files(folder_path)
-result_df, error_df = convert_worktime_result_to_dataframe(data_list=result, error_employee_list=error_employee_list)
-save_to_excel_with_sheets(result_df, error_df, file_name="result/output_6.xlsx")
+result = batch_process_worktime_files(folder_path)
+result_df = convert_worktime_result_to_dataframe(data_list=result)
+save_to_excel_with_sheets(result_df, file_name="result/output_1.xlsx")
