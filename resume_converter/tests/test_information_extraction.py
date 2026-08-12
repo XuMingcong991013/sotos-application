@@ -1,0 +1,469 @@
+"""
+简历信息提取、证据校验和结构化存储的离线测试。
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from datetime import date
+from pathlib import Path
+from unittest.mock import patch
+
+from openpyxl import load_workbook
+
+from information_extraction import InformationExtractor
+from information_extraction import extractor
+from information_extraction.normalizer import (
+    calculate_work_years,
+    normalize_date_range,
+    normalize_extraction,
+)
+from information_extraction.storage import (
+    rebuild_summary_workbook,
+    save_extracted_json,
+)
+from utils.processing_records import append_document_record
+
+
+SAMPLE_MARKDOWN = """
+# 张三
+
+性别：男
+出生年份：1999
+籍贯：湖北武汉
+
+## 专业技能
+1. 熟悉 Python、FastAPI
+· 掌握 MySQL、Redis
+
+## 工作经历
+2024/01-至今 A公司 后端工程师
+- 负责使用 Python 开发内部接口
+
+2022/07-2023/12 B公司 开发工程师
+- 负责业务系统维护
+
+## 项目经历
+项目A｜项目负责人｜2025/01-2025/06
+- 负责项目A接口设计和交付
+
+## 教育经历
+2022-2026 某大学 本科 计算机科学与技术
+""".strip()
+
+
+def sample_raw_data() -> dict:
+    """返回证据可在样例Markdown中逐字核验的模型结果。"""
+
+    return {
+        "basic_information": {
+            "name": {"value": "张三", "evidence": "# 张三"},
+            "gender": {"value": "男", "evidence": "性别：男"},
+            "birth_year": {
+                "value": "1999",
+                "evidence": "出生年份：1999",
+            },
+            "native_place": {
+                "value": "湖北武汉",
+                "evidence": "籍贯：湖北武汉",
+            },
+        },
+        "professional_skills": {
+            "text": (
+                "1. 熟悉 Python、FastAPI\n"
+                "· 掌握 MySQL、Redis"
+            ),
+            "source_type": "explicit",
+            "evidence": [
+                "1. 熟悉 Python、FastAPI",
+                "· 掌握 MySQL、Redis",
+            ],
+            "note": "来自专业技能栏目",
+        },
+        "work_experiences": [
+            {
+                "original_time": "2022/07-2023/12",
+                "company_name": "B公司",
+                "position_name": "开发工程师",
+                "description": "负责业务系统维护",
+                "evidence": {
+                    "original_time": "2022/07-2023/12",
+                    "company_name": "B公司",
+                    "position_name": "开发工程师",
+                    "description": "负责业务系统维护",
+                },
+            },
+            {
+                "original_time": "2024/01-至今",
+                "company_name": "A公司",
+                "position_name": "后端工程师",
+                "description": "负责使用 Python 开发内部接口",
+                "evidence": {
+                    "original_time": "2024/01-至今",
+                    "company_name": "A公司",
+                    "position_name": "后端工程师",
+                    "description": "负责使用 Python 开发内部接口",
+                },
+            },
+        ],
+        "project_experiences": [
+            {
+                "project_name": "项目A",
+                "position_name": "项目负责人",
+                "original_time": "2025/01-2025/06",
+                "description": "负责项目A接口设计和交付",
+                "evidence": {
+                    "project_name": "项目A",
+                    "position_name": "项目负责人",
+                    "original_time": "2025/01-2025/06",
+                    "description": "负责项目A接口设计和交付",
+                },
+            }
+        ],
+        "education_experiences": [
+            {
+                "original_time": "2022-2026",
+                "school_name": "某大学",
+                "degree": "本科",
+                "major": "计算机科学与技术",
+                "evidence": {
+                    "original_time": "2022-2026",
+                    "school_name": "某大学",
+                    "degree": "本科",
+                    "major": "计算机科学与技术",
+                },
+            }
+        ],
+        "issues": [],
+    }
+
+
+class NormalizerTests(unittest.TestCase):
+    """验证业务规则和防编造校验。"""
+
+    def test_education_years_get_default_months_only_for_education(self) -> None:
+        """教育年份补9月和6月，工作年份不补月份。"""
+
+        education = normalize_date_range(
+            "2022-2026",
+            education=True,
+        )
+        work = normalize_date_range(
+            "2022-2026",
+            education=False,
+        )
+
+        self.assertEqual(education["time"], "2022/09-2026/06")
+        self.assertEqual(education["date_status"], "normalized")
+        self.assertIn("9月入学", education["normalization_note"])
+        self.assertIn("6月毕业", education["normalization_note"])
+        self.assertEqual(work["time"], "2022-2026")
+
+    def test_normalization_preserves_skills_and_sorts_work(self) -> None:
+        """技能保留原文格式，工作经历按开始时间由近到远。"""
+
+        result = normalize_extraction(
+            sample_raw_data(),
+            SAMPLE_MARKDOWN,
+            calculation_date=date(2026, 8, 1),
+        )
+
+        self.assertEqual(
+            result["professional_skills"],
+            "1. 熟悉 Python、FastAPI\n· 掌握 MySQL、Redis",
+        )
+        self.assertEqual(
+            result["work_experiences"][0]["company_name"],
+            "A公司",
+        )
+        self.assertEqual(
+            result["education_experiences"][0]["time"],
+            "2022/09-2026/06",
+        )
+        self.assertEqual(result["work_years"]["value"], 0.0)
+
+    def test_unverifiable_value_is_cleared_and_recorded(self) -> None:
+        """模型编造或证据不匹配时清空值并记录问题。"""
+
+        raw_data = sample_raw_data()
+        raw_data["basic_information"]["native_place"] = {
+            "value": "北京",
+            "evidence": "籍贯：北京",
+        }
+        result = normalize_extraction(
+            raw_data,
+            SAMPLE_MARKDOWN,
+            calculation_date=date(2026, 8, 1),
+        )
+
+        self.assertEqual(
+            result["basic_information"]["native_place"],
+            "",
+        )
+        self.assertTrue(
+            any(
+                issue["field"] == "basic_information.native_place"
+                for issue in result["extraction_issues"]
+            )
+        )
+
+    def test_current_residence_is_not_treated_as_native_place(self) -> None:
+        """现居地即使有明确地名也不能作为籍贯。"""
+
+        markdown = SAMPLE_MARKDOWN.replace(
+            "籍贯：湖北武汉",
+            "现居地：湖北武汉",
+        )
+        raw_data = sample_raw_data()
+        raw_data["basic_information"]["native_place"] = {
+            "value": "湖北武汉",
+            "evidence": "现居地：湖北武汉",
+        }
+        result = normalize_extraction(
+            raw_data,
+            markdown,
+            calculation_date=date(2026, 8, 1),
+        )
+
+        self.assertEqual(
+            result["basic_information"]["native_place"],
+            "",
+        )
+        issue = next(
+            issue
+            for issue in result["extraction_issues"]
+            if issue["field"] == "basic_information.native_place"
+        )
+        self.assertIn("不能用现居地", issue["note"])
+
+    def test_work_years_round_down_to_half_year(self) -> None:
+        """毕业后月份按0.5年向下取整。"""
+
+        value = calculate_work_years(
+            [
+                {
+                    "end_date": "2025/01",
+                    "original_time": "2021/09-2025/01",
+                }
+            ],
+            calculation_date=date(2026, 8, 1),
+        )
+        self.assertEqual(value["value"], 1.5)
+
+    def test_ambiguous_degree_is_empty_and_recorded(self) -> None:
+        """只写研究生时不擅自判断硕士或博士。"""
+
+        markdown = SAMPLE_MARKDOWN.replace("本科", "研究生")
+        raw_data = sample_raw_data()
+        raw_data["education_experiences"][0]["degree"] = "研究生"
+        raw_data["education_experiences"][0]["evidence"]["degree"] = "研究生"
+        result = normalize_extraction(
+            raw_data,
+            markdown,
+            calculation_date=date(2026, 8, 1),
+        )
+
+        self.assertEqual(
+            result["education_experiences"][0]["degree"],
+            "",
+        )
+        self.assertTrue(
+            any(
+                issue["field"] == "education_experiences[0].degree"
+                for issue in result["extraction_issues"]
+            )
+        )
+
+
+class StorageTests(unittest.TestCase):
+    """验证JSON和多工作表Excel适合后续Word生成。"""
+
+    def test_json_and_summary_workbook_are_rebuilt(self) -> None:
+        """单份JSON可汇总到五张工作表并保留长文本。"""
+
+        with tempfile.TemporaryDirectory(
+            dir=Path.cwd()
+        ) as temp:
+            output_dir = Path(temp)
+            normalized = normalize_extraction(
+                sample_raw_data(),
+                SAMPLE_MARKDOWN,
+                calculation_date=date(2026, 8, 1),
+            )
+            normalized.update(
+                {
+                    "candidate_id": "candidate-001",
+                    "source_file": "D:/input/resume.pdf",
+                    "restored_markdown_file": "D:/output/resume_restored.md",
+                }
+            )
+            json_path = output_dir / "resume_extracted.json"
+            save_extracted_json(normalized, json_path)
+            workbook_path = rebuild_summary_workbook(output_dir)
+
+            workbook = load_workbook(workbook_path, data_only=True)
+            self.assertEqual(
+                workbook.sheetnames,
+                ["候选人汇总", "工作经历", "项目经历", "教育经历", "提取问题"],
+            )
+            self.assertEqual(
+                workbook["候选人汇总"]["F2"].value,
+                normalized["professional_skills"],
+            )
+            self.assertEqual(
+                workbook["教育经历"]["C2"].value,
+                "2022/09-2026/06",
+            )
+            self.assertEqual(
+                workbook["工作经历"]["F2"].value,
+                "A公司",
+            )
+            workbook.close()
+
+
+class InformationExtractorTests(unittest.TestCase):
+    """验证公开提取接口及处理记录更新，不访问真实LLM。"""
+
+    def test_information_extractor_writes_json_and_updates_tracking(self) -> None:
+        """提取成功生成JSON、汇总Excel并更新阶段状态。"""
+
+        with tempfile.TemporaryDirectory(
+            dir=Path.cwd()
+        ) as temp:
+            temp_path = Path(temp)
+            output_dir = temp_path / "outputs"
+            process_dir = output_dir / "process_data"
+            parsing_dir = process_dir / "document_parsing"
+            parsing_dir.mkdir(parents=True)
+            source_path = temp_path / "resume.pdf"
+            restored_path = parsing_dir / "resume_restored.md"
+            source_path.write_bytes(b"pdf")
+            restored_path.write_text(
+                SAMPLE_MARKDOWN,
+                encoding="utf-8",
+            )
+            append_document_record(
+                process_dir / "processing_records.xlsx",
+                source_path,
+                parsing_dir / "resume.md",
+                restored_path,
+                "成功",
+            )
+
+            with (
+                patch.dict(
+                    extractor.os.environ,
+                    {
+                        "LLM_API_KEY": "offline-key",
+                        "LLM_BASE_URL": "http://127.0.0.1:1/v1",
+                        "LLM_MODEL": "offline-model",
+                    },
+                    clear=False,
+                ),
+                patch.object(extractor, "load_dotenv"),
+                patch.object(
+                    extractor,
+                    "call_llm_extract",
+                    return_value=sample_raw_data(),
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                result = InformationExtractor(
+                    str(source_path),
+                    str(restored_path),
+                    str(output_dir),
+                )
+
+            json_path = Path(result)
+            saved = json.loads(
+                json_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                saved["basic_information"]["name"],
+                "张三",
+            )
+            self.assertTrue(
+                (
+                    process_dir
+                    / "information_extraction"
+                    / "resume_information.xlsx"
+                ).exists()
+            )
+
+            tracking = load_workbook(
+                process_dir / "processing_records.xlsx",
+                data_only=True,
+            )
+            worksheet = tracking["处理记录"]
+            self.assertEqual(worksheet["H2"].value, "成功")
+            self.assertEqual(
+                worksheet["G2"].value,
+                str(json_path.resolve()),
+            )
+            tracking.close()
+
+    def test_information_extraction_failure_is_logged_and_returns_none(self) -> None:
+        """LLM失败不会抛完整堆栈，并更新记录后返回None。"""
+
+        with tempfile.TemporaryDirectory(
+            dir=Path.cwd()
+        ) as temp:
+            temp_path = Path(temp)
+            output_dir = temp_path / "outputs"
+            process_dir = output_dir / "process_data"
+            parsing_dir = process_dir / "document_parsing"
+            parsing_dir.mkdir(parents=True)
+            source_path = temp_path / "resume.pdf"
+            restored_path = parsing_dir / "resume_restored.md"
+            source_path.write_bytes(b"pdf")
+            restored_path.write_text(SAMPLE_MARKDOWN, encoding="utf-8")
+            append_document_record(
+                process_dir / "processing_records.xlsx",
+                source_path,
+                None,
+                restored_path,
+                "成功",
+            )
+
+            with (
+                patch.dict(
+                    extractor.os.environ,
+                    {
+                        "LLM_API_KEY": "offline-key",
+                        "LLM_BASE_URL": "http://127.0.0.1:1/v1",
+                        "LLM_MODEL": "offline-model",
+                    },
+                    clear=False,
+                ),
+                patch.object(extractor, "load_dotenv"),
+                patch.object(
+                    extractor,
+                    "call_llm_extract",
+                    side_effect=RuntimeError("模拟LLM失败"),
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                result = InformationExtractor(
+                    str(source_path),
+                    str(restored_path),
+                    str(output_dir),
+                )
+
+            self.assertIsNone(result)
+            error_file = next(process_dir.glob("error_*.txt"))
+            log_content = error_file.read_text(encoding="utf-8")
+            self.assertIn("处理阶段：信息提取", log_content)
+            self.assertIn("模拟LLM失败", log_content)
+
+            tracking = load_workbook(
+                process_dir / "processing_records.xlsx",
+                data_only=True,
+            )
+            worksheet = tracking["处理记录"]
+            self.assertEqual(worksheet["H2"].value, "失败")
+            self.assertEqual(worksheet["I2"].value, "模拟LLM失败")
+            tracking.close()
