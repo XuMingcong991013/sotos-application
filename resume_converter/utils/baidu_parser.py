@@ -10,6 +10,8 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+from utils.runtime_paths import application_environment_path
+
 
 # ==================== 配置 ====================
 TOKEN_URL = "https://aip.baidubce.com/oauth/2.0/token"
@@ -143,7 +145,7 @@ def BaiduParser(input_file_path: str, output_dir: str) -> str:
     Returns:
         生成的Markdown文件绝对路径。
     """
-    load_dotenv()
+    load_dotenv(dotenv_path=application_environment_path())
 
     api_key = os.getenv("BAIDU_API_KEY")
     secret_key = os.getenv("BAIDU_SECRET_KEY")

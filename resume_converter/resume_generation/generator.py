@@ -32,6 +32,7 @@ from utils.processing_records import (
     TRACKING_WORKBOOK_NAME,
     update_generation_record,
 )
+from utils.runtime_paths import resource_path
 from .supplement_report import (
     SUPPLEMENT_WORKBOOK_NAME,
     update_supplement_report,
@@ -45,11 +46,7 @@ from .markdown_renderer import (
 
 FINAL_RESUMES_DIRNAME = "final_resumes"
 PROCESS_DATA_DIRNAME = "process_data"
-TEMPLATE_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "templates"
-    / "standard_resume.docx"
-)
+TEMPLATE_PATH = resource_path("templates", "standard_resume.docx")
 
 FONT_NAME = "微软雅黑"
 ACCENT_COLOR = RGBColor(84, 141, 212)
@@ -57,7 +54,9 @@ BODY_COLOR = RGBColor(0, 0, 0)
 PLACEHOLDER_COLOR = RGBColor(255, 0, 0)
 SMALL_FOUR = Pt(12)
 FIVE = Pt(10.5)
+BODY_LINE_SPACING = 1.0
 SECTION_CONTENT_SPACE_BEFORE = Pt(12)
+WORK_ENTRY_SPACE_BEFORE = Pt(10.5)
 PROJECT_CONTENT_SPACE_BEFORE = Pt(18)
 PLACEHOLDER = "待补充"
 
@@ -281,7 +280,7 @@ def _append_section(document: Document, element: Any) -> None:
 
 
 def _set_document_defaults(document: Document) -> None:
-    """设置A4版心和全文默认微软雅黑。"""
+    """设置A4版心，以及正文默认的微软雅黑和单倍行距。"""
 
     for section in document.sections:
         section.page_width = Cm(21)
@@ -296,16 +295,20 @@ def _set_document_defaults(document: Document) -> None:
             style.font.name = FONT_NAME
             _set_style_east_asia_font(style)
 
+    document.styles["Normal"].paragraph_format.line_spacing = (
+        BODY_LINE_SPACING
+    )
+
 
 def _add_basic_information(
     document: Document,
     basic: dict[str, Any],
     with_photo: bool,
 ) -> None:
-    """生成2:2或2:2:1的基本资料区域。"""
+    """生成三行两列或带纵向照片占位的三行三列表格。"""
 
     columns = 3 if with_photo else 2
-    table = document.add_table(rows=1, cols=columns)
+    table = document.add_table(rows=3, cols=columns)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
     _remove_table_borders(table)
@@ -317,49 +320,87 @@ def _add_basic_information(
     )
     _set_table_grid(table, width_values)
 
-    for cell, width in zip(table.rows[0].cells, width_values):
-        cell.width = Cm(width)
-        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
-        _set_cell_margins(cell, top=80, start=180, bottom=80, end=180)
+    for row in table.rows:
+        for cell, width in zip(row.cells, width_values):
+            cell.width = Cm(width)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            _set_cell_margins(
+                cell,
+                top=80,
+                start=180,
+                bottom=80,
+                end=180,
+            )
 
-    left_values = (
-        ("姓名", _text(basic.get("name"))),
-        ("出生年份", _text(basic.get("birth_year"))),
-        ("岗位职称", PLACEHOLDER),
+    values = (
+        (
+            ("姓名", _text(basic.get("name"))),
+            ("性别", _text(basic.get("gender"))),
+        ),
+        (
+            ("出生年份", _text(basic.get("birth_year"))),
+            ("籍贯", _text(basic.get("native_place"))),
+        ),
+        (("岗位职称", PLACEHOLDER), None),
     )
-    right_values = (
-        ("性别", _text(basic.get("gender"))),
-        ("籍贯", _text(basic.get("native_place"))),
-    )
-    _fill_basic_cell(table.cell(0, 0), left_values)
-    _fill_basic_cell(table.cell(0, 1), right_values)
+
+    for row_index, row_values in enumerate(values):
+        for column_index, field in enumerate(row_values):
+            _fill_basic_cell(
+                table.cell(row_index, column_index),
+                field,
+                first_row=row_index == 0,
+            )
 
     if with_photo:
-        photo_cell = table.cell(0, 2)
-        _set_cell_border(photo_cell, color="B7B7B7", size="8")
+        photo_cells = [table.cell(row_index, 2) for row_index in range(3)]
+        _set_cell_border(
+            photo_cells[0],
+            color="B7B7B7",
+            size="8",
+            edges=("top", "left", "right"),
+        )
+        _set_cell_border(
+            photo_cells[1],
+            color="B7B7B7",
+            size="8",
+            edges=("left", "right"),
+        )
+        _set_cell_border(
+            photo_cells[2],
+            color="B7B7B7",
+            size="8",
+            edges=("bottom", "left", "right"),
+        )
+        photo_cell = photo_cells[0].merge(photo_cells[2])
         paragraph = photo_cell.paragraphs[0]
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        paragraph.paragraph_format.line_spacing = 1.5
+        _set_body_line_spacing(paragraph)
         run = paragraph.add_run("证件照\n占位")
         _format_run(run, FIVE, BODY_COLOR, bold=False)
 
 
-def _fill_basic_cell(cell, values: tuple[tuple[str, str], ...]) -> None:
-    """写入基本资料单列，并保留人工填写岗位职称的空值。"""
+def _fill_basic_cell(
+    cell,
+    field: tuple[str, str] | None,
+    first_row: bool,
+) -> None:
+    """写入基本资料的单个字段；空字段保留为空白单元格。"""
 
     cell.text = ""
+    paragraph = cell.paragraphs[0]
+    _set_body_line_spacing(paragraph)
+    paragraph.paragraph_format.space_after = Pt(0)
 
-    for index, (label, value) in enumerate(values):
-        paragraph = cell.paragraphs[0] if index == 0 else cell.add_paragraph()
-        paragraph.paragraph_format.line_spacing = 1.5
-        paragraph.paragraph_format.space_after = Pt(0)
-        if index == 0:
-            paragraph.paragraph_format.space_before = (
-                SECTION_CONTENT_SPACE_BEFORE
-            )
+    if first_row:
+        paragraph.paragraph_format.space_before = SECTION_CONTENT_SPACE_BEFORE
 
-        run = paragraph.add_run(f"{label}：{value or PLACEHOLDER}")
-        _format_run(run, SMALL_FOUR, BODY_COLOR, bold=False)
+    if field is None:
+        return
+
+    label, value = field
+    run = paragraph.add_run(f"{label}：{value or PLACEHOLDER}")
+    _format_run(run, FIVE, BODY_COLOR, bold=False)
 
 
 def _add_skills(document: Document, skills: str) -> None:
@@ -368,7 +409,7 @@ def _add_skills(document: Document, skills: str) -> None:
     _add_markdown_content(
         document=document,
         text=skills or PLACEHOLDER,
-        size=SMALL_FOUR,
+        size=FIVE,
         color=BODY_COLOR,
         first_space_before=SECTION_CONTENT_SPACE_BEFORE,
     )
@@ -410,13 +451,21 @@ def _add_work_experiences(
     ]
 
     time_width, position_width, company_width = _work_column_widths(rows)
-    table = document.add_table(rows=0, cols=3)
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    table.autofit = False
-    _remove_table_borders(table)
-    _set_table_grid(table, (time_width, company_width, position_width))
 
     for index, item in enumerate(rows):
+        if index:
+            _add_work_table_separator(document)
+
+        # 每段工作使用独立表格。若全部经历共用一个表格，Word会把
+        # 不同标题行的keepNext串成分页链，造成整段误移或标题孤行。
+        table = document.add_table(rows=0, cols=3)
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = False
+        _remove_table_borders(table)
+        _set_table_grid(
+            table,
+            (time_width, company_width, position_width),
+        )
         title_row = table.add_row()
         title_row._tr.get_or_add_trPr().append(_cant_split_element())
         values = (
@@ -435,13 +484,23 @@ def _add_work_experiences(
             _set_cell_margins(cell, top=0, start=0, bottom=0, end=0)
             paragraph = cell.paragraphs[0]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            _set_body_line_spacing(paragraph)
             paragraph.paragraph_format.space_after = Pt(0)
             if index == 0:
                 paragraph.paragraph_format.space_before = (
                     SECTION_CONTENT_SPACE_BEFORE
                 )
-            paragraph.paragraph_format.keep_with_next = bool(
-                _text(item.get("description"))
+            elif (
+                _text(rows[index - 1].get("description"))
+                and _text(item.get("description"))
+            ):
+                # 使用段前距形成经历间的视觉空行。不要插入空表格行，
+                # 否则它与“与下段同页”组合时会触发Word异常整块分页。
+                paragraph.paragraph_format.space_before = (
+                    WORK_ENTRY_SPACE_BEFORE
+                )
+            paragraph.paragraph_format.keep_with_next = (
+                bool(_text(item.get("description")))
             )
             run = paragraph.add_run(value)
             _format_run(run, SMALL_FOUR, ACCENT_COLOR, bold=True)
@@ -460,23 +519,32 @@ def _add_work_experiences(
                 bottom=0,
                 end=0,
             )
-            _fill_markdown_cell(
-                description_cell,
-                description,
-                FIVE,
-                BODY_COLOR,
+            label_paragraph = description_cell.paragraphs[0]
+            _set_body_line_spacing(label_paragraph)
+            label_paragraph.paragraph_format.space_after = Pt(0)
+            label_paragraph.paragraph_format.keep_with_next = True
+            label_run = label_paragraph.add_run("工作内容：")
+            _format_run(label_run, FIVE, BODY_COLOR, bold=True)
+
+            # 标签单独占一行，Markdown描述从下一段开始；避免控制符
+            # 影响“工作内容：”的固定格式。
+            _add_markdown_content(
+                cell=description_cell,
+                text=description,
+                size=FIVE,
+                color=BODY_COLOR,
+                append=True,
             )
 
-        if (
-            index < len(rows) - 1
-            and description
-            and _text(rows[index + 1].get("description"))
-        ):
-            spacer = table.add_row().cells[0]
-            spacer = spacer.merge(table.rows[-1].cells[2])
-            paragraph = spacer.paragraphs[0]
-            paragraph.paragraph_format.space_after = Pt(0)
-            paragraph.add_run("")
+
+def _add_work_table_separator(document: Document) -> None:
+    """分隔相邻工作表格，避免Word自动合并且不产生可见空行。"""
+
+    paragraph = document.add_paragraph()
+    _set_body_line_spacing(paragraph)
+    paragraph.paragraph_format.space_before = Pt(0)
+    paragraph.paragraph_format.space_after = Pt(0)
+    paragraph.paragraph_format.line_spacing = Pt(1)
 
 
 def _work_column_widths(
@@ -543,6 +611,7 @@ def _add_project_experiences(
 
         title = " | ".join(title_parts)
         title_paragraph = document.add_paragraph()
+        _set_body_line_spacing(title_paragraph)
         title_paragraph.paragraph_format.keep_with_next = True
         if index == 1:
             title_paragraph.paragraph_format.space_before = (
@@ -593,6 +662,7 @@ def _add_education_experiences(
             _text(item.get("major")) or "专业待补充",
         ]
         paragraph = document.add_paragraph()
+        _set_body_line_spacing(paragraph)
         if index == 0:
             paragraph.paragraph_format.space_before = (
                 SECTION_CONTENT_SPACE_BEFORE
@@ -619,6 +689,7 @@ def _add_work_years(document: Document, work_years: dict[str, Any]) -> None:
             ) + "年"
 
     paragraph = document.add_paragraph()
+    _set_body_line_spacing(paragraph)
     paragraph.paragraph_format.space_before = SECTION_CONTENT_SPACE_BEFORE
     paragraph.paragraph_format.space_after = Pt(0)
     run = paragraph.add_run(display_value or PLACEHOLDER)
@@ -644,6 +715,7 @@ def _add_markdown_content(
     document: Document | None = None,
     cell=None,
     first_space_before=None,
+    append: bool = False,
 ) -> None:
     """把Markdown语义块统一写入正文或表格单元格。"""
 
@@ -661,7 +733,7 @@ def _add_markdown_content(
         if cell is not None:
             paragraph = (
                 cell.paragraphs[0]
-                if index == 0
+                if index == 0 and not append
                 else cell.add_paragraph()
             )
         else:
@@ -687,7 +759,7 @@ def _format_markdown_paragraph(
 ) -> None:
     """设置Markdown块的段落语义并写入全部内联格式。"""
 
-    paragraph.paragraph_format.line_spacing = 1.5
+    _set_body_line_spacing(paragraph)
     paragraph.paragraph_format.space_after = Pt(0)
     paragraph.paragraph_format.space_before = (
         first_space_before
@@ -972,8 +1044,27 @@ def _remove_table_borders(table) -> None:
         element.set(qn("w:val"), "nil")
 
 
-def _set_cell_border(cell, color: str, size: str) -> None:
-    """为证件照占位单元格设置细边框。"""
+def _set_body_line_spacing(paragraph) -> None:
+    """设置真实单倍行距，并关闭模板文档网格对正文的拉伸。"""
+
+    paragraph.paragraph_format.line_spacing = BODY_LINE_SPACING
+    paragraph_properties = paragraph._p.get_or_add_pPr()
+    snap_to_grid = paragraph_properties.find(qn("w:snapToGrid"))
+
+    if snap_to_grid is None:
+        snap_to_grid = OxmlElement("w:snapToGrid")
+        paragraph_properties.append(snap_to_grid)
+
+    snap_to_grid.set(qn("w:val"), "0")
+
+
+def _set_cell_border(
+    cell,
+    color: str,
+    size: str,
+    edges: tuple[str, ...],
+) -> None:
+    """为纵向照片占位区域的指定边设置细边框。"""
 
     tc_pr = cell._tc.get_or_add_tcPr()
     borders = tc_pr.first_child_found_in("w:tcBorders")
@@ -982,7 +1073,12 @@ def _set_cell_border(cell, color: str, size: str) -> None:
         borders = OxmlElement("w:tcBorders")
         tc_pr.append(borders)
 
-    for edge in ("top", "left", "bottom", "right"):
+    for edge in edges:
+        existing = borders.find(qn(f"w:{edge}"))
+
+        if existing is not None:
+            borders.remove(existing)
+
         element = OxmlElement(f"w:{edge}")
         element.set(qn("w:val"), "single")
         element.set(qn("w:sz"), size)

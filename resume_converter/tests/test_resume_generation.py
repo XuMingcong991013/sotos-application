@@ -19,9 +19,11 @@ from openpyxl import load_workbook
 
 from resume_generation import ResumeGenerator
 from resume_generation.generator import (
+    BODY_COLOR,
     FONT_NAME,
     PLACEHOLDER_COLOR,
     PROJECT_CONTENT_SPACE_BEFORE,
+    WORK_ENTRY_SPACE_BEFORE,
     _xml_text,
 )
 from utils.processing_records import (
@@ -138,7 +140,31 @@ class ResumeGenerationTests(unittest.TestCase):
                 (output_dir / "final_resumes").resolve(),
             )
             document = Document(result_path)
-            self.assertEqual(len(document.tables[0].columns), 2)
+            basic_table = document.tables[0]
+            self.assertEqual(len(basic_table.rows), 3)
+            self.assertEqual(len(basic_table.columns), 2)
+            self.assertEqual(basic_table.cell(0, 0).text, "姓名：张三")
+            self.assertEqual(basic_table.cell(0, 1).text, "性别：男")
+            self.assertEqual(
+                basic_table.cell(1, 0).text,
+                "出生年份：1999",
+            )
+            self.assertEqual(basic_table.cell(1, 1).text, "籍贯：湖北武汉")
+            self.assertEqual(
+                basic_table.cell(2, 0).text,
+                "岗位职称：待补充",
+            )
+            self.assertEqual(basic_table.cell(2, 1).text, "")
+            self.assertTrue(
+                all(
+                    run.font.size.pt == 10.5
+                    for row in basic_table.rows
+                    for cell in row.cells[:2]
+                    for paragraph in cell.paragraphs
+                    for run in paragraph.runs
+                    if run.text
+                )
+            )
             text = _all_document_text(document)
             self.assertIn("岗位职称：待补充", text)
             self.assertIn(
@@ -214,6 +240,7 @@ class ResumeGenerationTests(unittest.TestCase):
 
             document = Document(result)
             basic_table = document.tables[0]
+            self.assertEqual(len(basic_table.rows), 3)
             self.assertEqual(len(basic_table.columns), 3)
             grid_widths = [
                 int(column.get(qn("w:w")))
@@ -222,6 +249,95 @@ class ResumeGenerationTests(unittest.TestCase):
             self.assertAlmostEqual(grid_widths[0] / grid_widths[2], 2, places=1)
             self.assertAlmostEqual(grid_widths[1] / grid_widths[2], 2, places=1)
             self.assertIn("证件照\n占位", basic_table.cell(0, 2).text)
+            self.assertEqual(
+                basic_table.cell(0, 2)._tc,
+                basic_table.cell(2, 2)._tc,
+            )
+            raw_photo_cells = [
+                row.tc_lst[2]
+                for row in basic_table._tbl.tr_lst
+            ]
+            border_edges = []
+
+            for cell in raw_photo_cells:
+                borders = cell.tcPr.find(qn("w:tcBorders"))
+                border_edges.append(
+                    {
+                        child.tag.rsplit("}", 1)[-1]
+                        for child in borders
+                    }
+                )
+
+            self.assertEqual(
+                border_edges,
+                [
+                    {"top", "left", "right"},
+                    {"left", "right"},
+                    {"bottom", "left", "right"},
+                ],
+            )
+
+    def test_body_uses_single_spacing_and_skills_use_five(self) -> None:
+        """除模板分区标题外，生成内容使用单倍行距且技能为五号。"""
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            temp_path = Path(temp)
+            output_dir = temp_path / "outputs"
+            source_path = temp_path / "resume.pdf"
+            json_path = temp_path / "resume_extracted.json"
+            source_path.write_bytes(b"pdf")
+            json_path.write_text(
+                json.dumps(sample_data(source_path), ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(io.StringIO()):
+                result = ResumeGenerator(str(json_path), str(output_dir))
+
+            document = Document(result)
+            self.assertEqual(
+                document.styles["Normal"].paragraph_format.line_spacing,
+                1.0,
+            )
+            skill_paragraph = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text.startswith("熟悉 Python")
+            )
+            self.assertEqual(skill_paragraph.paragraph_format.line_spacing, 1.0)
+            self.assertEqual(
+                skill_paragraph._p.pPr.find(qn("w:snapToGrid")).get(
+                    qn("w:val")
+                ),
+                "0",
+            )
+            self.assertTrue(
+                all(run.font.size.pt == 10.5 for run in skill_paragraph.runs)
+            )
+            body_paragraphs = [
+                paragraph
+                for table in document.tables
+                for row in table.rows
+                for cell in row.cells
+                for paragraph in cell.paragraphs
+                if paragraph.text
+            ]
+            self.assertTrue(body_paragraphs)
+            self.assertTrue(
+                all(
+                    paragraph.paragraph_format.line_spacing in (None, 1.0)
+                    for paragraph in body_paragraphs
+                )
+            )
+            self.assertTrue(
+                all(
+                    paragraph._p.pPr.find(qn("w:snapToGrid")).get(
+                        qn("w:val")
+                    )
+                    == "0"
+                    for paragraph in body_paragraphs
+                )
+            )
 
     def test_missing_information_uses_stable_placeholders(self) -> None:
         """字段和整个分区缺失时保留可人工补充的稳定版式。"""
@@ -364,16 +480,38 @@ class ResumeGenerationTests(unittest.TestCase):
             self.assertIn("项目描述第一行", text_paragraphs)
             self.assertIn("项目描述第二行", text_paragraphs)
 
-            work_table = document.tables[1]
-            description_cell = work_table.cell(1, 0)
+            first_work_table = document.tables[1]
+            second_work_table = document.tables[2]
+            self.assertEqual(len(first_work_table.rows), 2)
+            self.assertEqual(len(second_work_table.rows), 2)
+            self.assertTrue(
+                all(
+                    cell.paragraphs[0].paragraph_format.space_before
+                    == WORK_ENTRY_SPACE_BEFORE
+                    for cell in second_work_table.rows[0].cells
+                )
+            )
+            self.assertEqual(
+                [
+                    cell.paragraphs[0].paragraph_format.keep_with_next
+                    for cell in first_work_table.rows[0].cells
+                ],
+                [True, True, True],
+            )
+            description_cell = first_work_table.cell(1, 0)
             self.assertEqual(
                 [paragraph.text for paragraph in description_cell.paragraphs],
                 [
+                    "工作内容：",
                     "工作描述第一行",
                     "工作描述第二行",
                     "工作描述第三行",
                 ],
             )
+            label_run = description_cell.paragraphs[0].runs[0]
+            self.assertTrue(label_run.bold)
+            self.assertEqual(label_run.font.size.pt, 10.5)
+            self.assertEqual(label_run.font.color.rgb, BODY_COLOR)
 
     def test_common_markdown_is_rendered_as_word_formatting(self) -> None:
         """三类长文本共用Markdown渲染，最终可见文本不泄漏控制标记。"""
@@ -422,7 +560,9 @@ class ResumeGenerationTests(unittest.TestCase):
                 number_properties = paragraph._p.pPr.find(qn("w:numPr"))
                 self.assertIsNotNone(number_properties)
 
-            work_description = document.tables[1].cell(1, 0).paragraphs[0]
+            description_cell = document.tables[1].cell(1, 0)
+            self.assertEqual(description_cell.paragraphs[0].text, "工作内容：")
+            work_description = description_cell.paragraphs[1]
             bold_runs = [run.text for run in work_description.runs if run.bold]
             self.assertEqual(bold_runs, ["通用标签："])
 

@@ -20,6 +20,7 @@ from utils.processing_records import (
     TRACKING_WORKBOOK_NAME,
     update_extraction_record,
 )
+from utils.runtime_paths import application_environment_path
 
 from .normalizer import normalize_extraction
 from .storage import (
@@ -41,6 +42,14 @@ SYSTEM_PROMPT = """
 3. 工作经历：原始时间、公司、岗位、工作描述。
 4. 项目经历：项目名称、岗位或角色、原始时间、项目描述。
 5. 教育经历：原始时间、学校、学历、专业。
+
+项目识别规则：
+- 项目不要求出现在独立的“项目经历”或“项目经验”栏目中。工作经历下明确写出的项目、产品、系统、平台、车型或设备开发，也必须作为项目候选提取。
+- “主要产品有”“负责/参与……开发”“……系统”“……平台”“……项目”等原文内容都可能是项目证据；同一段原文可以同时作为工作描述和项目描述的证据。
+- 若同一工作时间段列出多个项目或产品，且名称与描述的边界明确，应分别提取；若多个名称共用一段描述、无法安全确定逐项归属，则按原文产品组整体保留为一个项目，不能擅自拆分或编造对应关系。
+- 项目时间只有在项目内容明确隶属于某一工作时间段时，才可使用该段原始时间；项目岗位或角色没有明确写出时必须留空。
+- 项目描述必须逐字来自原文。即使没有独立项目栏目，也不能仅凭这一点返回空的project_experiences。
+- 不能把公司主营业务、岗位常识或仅有的技能词推断为项目。
 
 证据规则：
 - 每个非空事实必须提供可以从输入Markdown中逐字找到的证据。
@@ -190,7 +199,7 @@ def InformationExtractor(
         失败时返回None，并把异常写入过程数据错误日志。
     """
 
-    load_dotenv()
+    load_dotenv(dotenv_path=application_environment_path())
     source_path = Path(input_file_path)
     restored_path = Path(input_file)
     output_root = Path(output_dir)

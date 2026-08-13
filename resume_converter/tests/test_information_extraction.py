@@ -145,6 +145,80 @@ def sample_raw_data() -> dict:
 class NormalizerTests(unittest.TestCase):
     """验证业务规则和防编造校验。"""
 
+    def test_prompt_recognizes_products_without_project_section(self) -> None:
+        """提示词要求识别工作经历内的明确产品型项目。"""
+
+        self.assertIn("项目不要求出现在独立的", extractor.SYSTEM_PROMPT)
+        self.assertIn("主要产品有", extractor.SYSTEM_PROMPT)
+        self.assertIn("按原文产品组整体保留", extractor.SYSTEM_PROMPT)
+
+    def test_product_projects_pass_evidence_validation(self) -> None:
+        """产品型项目只要逐字可核验即可进入结构化结果。"""
+
+        markdown = """
+2015-2018：深圳航盛扬州研发部
+主要产品有：
+上汽名爵印度SUV车型车载主机及TBOX产品的开发
+青岛四方标准动车组PIS项目开发
+""".strip()
+        raw_data = {
+            "basic_information": {},
+            "professional_skills": {},
+            "work_experiences": [],
+            "project_experiences": [
+                {
+                    "project_name": (
+                        "上汽名爵印度SUV车型车载主机及TBOX产品"
+                    ),
+                    "position_name": "",
+                    "original_time": "2015-2018",
+                    "description": (
+                        "上汽名爵印度SUV车型车载主机及TBOX产品的开发"
+                    ),
+                    "evidence": {
+                        "project_name": (
+                            "上汽名爵印度SUV车型车载主机及TBOX产品"
+                        ),
+                        "position_name": "",
+                        "original_time": "2015-2018",
+                        "description": (
+                            "上汽名爵印度SUV车型车载主机及TBOX产品的开发"
+                        ),
+                    },
+                },
+                {
+                    "project_name": "青岛四方标准动车组PIS项目",
+                    "position_name": "",
+                    "original_time": "2015-2018",
+                    "description": "青岛四方标准动车组PIS项目开发",
+                    "evidence": {
+                        "project_name": "青岛四方标准动车组PIS项目",
+                        "position_name": "",
+                        "original_time": "2015-2018",
+                        "description": "青岛四方标准动车组PIS项目开发",
+                    },
+                },
+            ],
+            "education_experiences": [],
+            "issues": [],
+        }
+
+        result = normalize_extraction(
+            raw_data,
+            markdown,
+            calculation_date=date(2026, 8, 1),
+        )
+
+        self.assertEqual(len(result["project_experiences"]), 2)
+        self.assertEqual(
+            result["project_experiences"][0]["project_name"],
+            "上汽名爵印度SUV车型车载主机及TBOX产品",
+        )
+        self.assertEqual(
+            result["project_experiences"][1]["description"],
+            "青岛四方标准动车组PIS项目开发",
+        )
+
     def test_education_years_get_default_months_only_for_education(self) -> None:
         """教育年份补9月和6月，工作年份不补月份。"""
 

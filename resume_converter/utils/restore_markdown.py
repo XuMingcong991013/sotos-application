@@ -16,6 +16,8 @@ from docx.text.paragraph import Paragraph
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from utils.runtime_paths import application_environment_path
+
 
 SUPPORTED_SUFFIXES = {
     ".pdf",
@@ -605,7 +607,7 @@ def RestoreMarkdown(
         最终Markdown文件的绝对路径。
     """
 
-    load_dotenv()
+    load_dotenv(dotenv_path=application_environment_path())
 
     source_path = Path(input_file_path)
     input_path = Path(input_file)
