@@ -99,6 +99,44 @@ class ResumePipelineTests(unittest.TestCase):
         extractor.assert_not_called()
         generator.assert_not_called()
 
+    def test_chery_pipeline_uses_dedicated_extractor_and_generator(self) -> None:
+        """奇瑞共享文档解析，但分发到专用提取与宋体Word生成。"""
+
+        with (
+            patch.object(
+                resume_pipeline,
+                "DataParser",
+                return_value="resume_restored.md",
+            ),
+            patch.object(
+                resume_pipeline,
+                "CheryInformationExtractor",
+                return_value="resume_extracted.json",
+            ) as extractor,
+            patch.object(
+                resume_pipeline,
+                "CheryResumeGenerator",
+                return_value="resume_标准简历.docx",
+            ) as generator,
+        ):
+            result = ResumeConverter(
+                "resume.pdf",
+                "output",
+                " 奇瑞 ",
+                True,
+            )
+
+        self.assertEqual(result, "resume_标准简历.docx")
+        extractor.assert_called_once_with(
+            input_file_path="resume.pdf",
+            input_file="resume_restored.md",
+            output_dir="output",
+        )
+        generator.assert_called_once_with(
+            input_file="resume_extracted.json",
+            output_dir="output",
+        )
+
     def test_youzu_pipeline_uses_shared_extraction_and_headerless_generator(
         self,
     ) -> None:

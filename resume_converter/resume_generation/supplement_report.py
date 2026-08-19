@@ -50,6 +50,7 @@ def update_supplement_report(
     data: dict[str, Any],
     final_docx_path: Path,
     workbook_path: Path,
+    supplement_items: list[str] | None = None,
 ) -> Path:
     """按最终Word绝对路径创建或更新一条人工补充记录。"""
 
@@ -60,7 +61,11 @@ def update_supplement_report(
         _mapping(data.get("basic_information")).get("name")
     ) or "待补充"
     supplement_text = _format_supplement_items(
-        collect_supplement_items(data)
+        (
+            collect_supplement_items(data)
+            if supplement_items is None
+            else supplement_items
+        )
     )
     target_row = None
 
@@ -159,6 +164,87 @@ def collect_supplement_items(data: dict[str, Any]) -> list[str]:
 
         if work_years_missing and not missing_graduation_time:
             items.append("请确认最后一段学历的毕业时间，以便计算工作年限")
+
+    return items
+
+
+def collect_chery_supplement_items(data: dict[str, Any]) -> list[str]:
+    """按奇瑞模板必填字段和AI确认规则汇总人工事项。"""
+
+    items: list[str] = []
+    basic = _mapping(data.get("basic_information"))
+
+    for field, label in (
+        ("name", "姓名"),
+        ("gender", "性别"),
+        ("birth_date", "出生年月"),
+        ("phone", "联系电话"),
+        ("email", "邮箱"),
+        ("native_place", "籍贯"),
+    ):
+        if not _text(basic.get(field)):
+            items.append(f"请补充{label}")
+
+    if _mapping(data.get("work_years")).get("value") is None:
+        items.append("请补充最后学历毕业时间，以便计算工作年限")
+
+    for field, label in (
+        ("self_evaluation", "自我评价"),
+        ("professional_skills", "专业技能"),
+    ):
+        if not _text(data.get(field)):
+            items.append(f"请补充{label}")
+        elif _text(data.get(f"{field}_source")) == "generated":
+            items.append(f"请人工确认AI生成的{label}")
+
+    work_experiences = [
+        _mapping(item) for item in _list(data.get("work_experiences"))
+    ]
+    if not work_experiences:
+        items.append("请补充工作经历：时间、公司名称、岗位名称")
+    else:
+        for index, experience in enumerate(work_experiences, start=1):
+            missing = _missing_labels(experience, _WORK_FIELDS)
+            if missing:
+                items.append(
+                    f"请补充第{index}段工作经历的{'、'.join(missing)}"
+                )
+
+    project_experiences = [
+        _mapping(item)
+        for item in _list(data.get("project_experiences"))
+    ]
+    chery_project_fields = (
+        ("project_name", "项目名称"),
+        ("description", "项目描述"),
+        ("achievement", "工作业绩"),
+    )
+    if not project_experiences:
+        items.append("请补充项目经历：项目名称、项目描述、工作业绩")
+    else:
+        for index, experience in enumerate(project_experiences, start=1):
+            missing = _missing_labels(experience, chery_project_fields)
+            if missing:
+                items.append(
+                    f"请补充项目{index}的{'、'.join(missing)}"
+                )
+
+    education_experiences = [
+        _mapping(item)
+        for item in _list(data.get("education_experiences"))
+    ]
+    if not education_experiences:
+        items.append("请补充教育背景：就读时间、学校、专业、学历")
+    else:
+        for index, experience in enumerate(
+            education_experiences,
+            start=1,
+        ):
+            missing = _missing_labels(experience, _EDUCATION_FIELDS)
+            if missing:
+                items.append(
+                    f"请补充第{index}段教育背景的{'、'.join(missing)}"
+                )
 
     return items
 

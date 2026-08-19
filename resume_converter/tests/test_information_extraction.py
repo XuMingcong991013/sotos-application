@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from information_extraction import InformationExtractor
+from information_extraction import CheryInformationExtractor, InformationExtractor
 from information_extraction import extractor
 from information_extraction.normalizer import (
     calculate_work_years,
@@ -53,6 +53,27 @@ SAMPLE_MARKDOWN = """
 
 ## 教育经历
 2022-2026 某大学 本科 计算机科学与技术
+""".strip()
+
+CHERY_MARKDOWN = """
+# 李四
+性别：女
+出生年月：1995年6月
+联系电话：13800138000
+邮箱：lisi@example.com
+籍贯：江苏南京
+
+## 工作经历
+2020/07-至今 甲公司 测试工程师
+负责车载系统测试、缺陷跟踪和版本验收。
+
+## 项目经历
+座舱测试项目
+项目描述：负责测试方案设计和功能验证。
+工作业绩：完成三轮版本验收并推动关键问题闭环。
+
+## 教育经历
+2016/09-2020/06 某大学 本科 电子信息工程
 """.strip()
 
 
@@ -142,6 +163,94 @@ def sample_raw_data() -> dict:
     }
 
 
+def sample_chery_raw_data() -> dict:
+    """返回含奇瑞扩展字段和受控AI内容的模型结果。"""
+
+    return {
+        "basic_information": {
+            "name": {"value": "李四", "evidence": "# 李四"},
+            "gender": {"value": "女", "evidence": "性别：女"},
+            "birth_year": {
+                "value": "1995",
+                "evidence": "出生年月：1995年6月",
+            },
+            "birth_date": {
+                "value": "1995年6月",
+                "evidence": "出生年月：1995年6月",
+            },
+            "phone": {
+                "value": "13800138000",
+                "evidence": "联系电话：13800138000",
+            },
+            "email": {
+                "value": "lisi@example.com",
+                "evidence": "邮箱：lisi@example.com",
+            },
+            "native_place": {
+                "value": "江苏南京",
+                "evidence": "籍贯：江苏南京",
+            },
+        },
+        "self_evaluation": {
+            "text": "具备车载系统测试、缺陷跟踪和版本验收经验。",
+            "source_type": "generated",
+            "evidence": ["负责车载系统测试、缺陷跟踪和版本验收。"],
+            "note": "基于工作经历生成",
+        },
+        "professional_skills": {
+            "text": "熟悉车载系统测试、缺陷跟踪和版本验收。",
+            "source_type": "generated",
+            "evidence": ["负责车载系统测试、缺陷跟踪和版本验收。"],
+            "note": "基于工作经历生成",
+        },
+        "work_experiences": [
+            {
+                "original_time": "2020/07-至今",
+                "company_name": "甲公司",
+                "position_name": "测试工程师",
+                "description": "负责车载系统测试、缺陷跟踪和版本验收。",
+                "evidence": {
+                    "original_time": "2020/07-至今",
+                    "company_name": "甲公司",
+                    "position_name": "测试工程师",
+                    "description": "负责车载系统测试、缺陷跟踪和版本验收。",
+                },
+            }
+        ],
+        "project_experiences": [
+            {
+                "project_name": "座舱测试项目",
+                "position_name": "",
+                "original_time": "",
+                "description": "负责测试方案设计和功能验证。",
+                "achievement": "完成三轮版本验收并推动关键问题闭环。",
+                "evidence": {
+                    "project_name": "座舱测试项目",
+                    "position_name": "",
+                    "original_time": "",
+                    "description": "负责测试方案设计和功能验证。",
+                    "achievement": "完成三轮版本验收并推动关键问题闭环。",
+                },
+            }
+        ],
+        "education_experiences": [
+            {
+                "original_time": "2016/09-2020/06",
+                "school_name": "某大学",
+                "degree": "本科",
+                "major": "电子信息工程",
+                "evidence": {
+                    "original_time": "2016/09-2020/06",
+                    "school_name": "某大学",
+                    "degree": "本科",
+                    "major": "电子信息工程",
+                },
+            }
+        ],
+        "issues": [],
+    }
+
+
 class NormalizerTests(unittest.TestCase):
     """验证业务规则和防编造校验。"""
 
@@ -151,6 +260,72 @@ class NormalizerTests(unittest.TestCase):
         self.assertIn("项目不要求出现在独立的", extractor.SYSTEM_PROMPT)
         self.assertIn("主要产品有", extractor.SYSTEM_PROMPT)
         self.assertIn("按原文产品组整体保留", extractor.SYSTEM_PROMPT)
+
+    def test_chery_generated_sections_require_grounded_evidence(self) -> None:
+        """奇瑞AI兜底内容必须带原文依据并明确记录人工确认。"""
+
+        self.assertIn("没有时，必须仅依据简历", extractor.CHERY_SYSTEM_PROMPT)
+        self.assertIn(
+            "只有整份简历不存在任何可作为依据的有效事实时",
+            extractor.CHERY_NARRATIVE_FALLBACK_PROMPT,
+        )
+
+        result = normalize_extraction(
+            sample_chery_raw_data(),
+            CHERY_MARKDOWN,
+            calculation_date=date(2026, 8, 1),
+            template_tag="奇瑞",
+        )
+
+        self.assertEqual(
+            result["basic_information"]["birth_date"],
+            "1995年6月",
+        )
+        self.assertEqual(result["self_evaluation_source"], "generated")
+        self.assertEqual(result["professional_skills_source"], "generated")
+        self.assertEqual(
+            result["project_experiences"][0]["achievement"],
+            "完成三轮版本验收并推动关键问题闭环。",
+        )
+        generated_fields = {
+            issue["field"]
+            for issue in result["extraction_issues"]
+            if issue["status"] == "generated"
+        }
+        self.assertEqual(
+            generated_fields,
+            {"self_evaluation", "professional_skills"},
+        )
+
+        ungrounded = sample_chery_raw_data()
+        ungrounded["self_evaluation"]["evidence"] = ["原文不存在"]
+        rejected = normalize_extraction(
+            ungrounded,
+            CHERY_MARKDOWN,
+            calculation_date=date(2026, 8, 1),
+            template_tag="奇瑞",
+        )
+        self.assertEqual(rejected["self_evaluation"], "")
+        self.assertEqual(rejected["self_evaluation_source"], "missing")
+
+        inferred = sample_chery_raw_data()
+        inferred["professional_skills"] = {
+            "text": "负责车载系统测试、缺陷跟踪和版本验收。",
+            "source_type": "inferred",
+            "evidence": ["负责车载系统测试、缺陷跟踪和版本验收。"],
+            "note": "",
+        }
+        rejected_inferred = normalize_extraction(
+            inferred,
+            CHERY_MARKDOWN,
+            calculation_date=date(2026, 8, 1),
+            template_tag="奇瑞",
+        )
+        self.assertEqual(rejected_inferred["professional_skills"], "")
+        self.assertEqual(
+            rejected_inferred["professional_skills_source"],
+            "missing",
+        )
 
     def test_product_projects_pass_evidence_validation(self) -> None:
         """产品型项目只要逐字可核验即可进入结构化结果。"""
@@ -401,6 +576,138 @@ class StorageTests(unittest.TestCase):
 
 class InformationExtractorTests(unittest.TestCase):
     """验证公开提取接口及处理记录更新，不访问真实LLM。"""
+
+    def test_chery_extractor_uses_template_profile(self) -> None:
+        """奇瑞入口保存扩展字段、模板标签和AI来源。"""
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            temp_path = Path(temp)
+            output_dir = temp_path / "outputs"
+            source_path = temp_path / "resume.pdf"
+            restored_path = temp_path / "resume_restored.md"
+            source_path.write_bytes(b"pdf")
+            restored_path.write_text(CHERY_MARKDOWN, encoding="utf-8")
+
+            with (
+                patch.dict(
+                    extractor.os.environ,
+                    {
+                        "LLM_API_KEY": "offline-key",
+                        "LLM_BASE_URL": "http://127.0.0.1:1/v1",
+                        "LLM_MODEL": "offline-model",
+                    },
+                    clear=False,
+                ),
+                patch.object(extractor, "load_dotenv"),
+                patch.object(
+                    extractor,
+                    "call_llm_extract_chery",
+                    return_value=sample_chery_raw_data(),
+                ) as chery_call,
+                patch.object(
+                    extractor,
+                    "_call_llm_complete_chery_narratives",
+                ) as fallback_call,
+                redirect_stdout(io.StringIO()),
+            ):
+                result = CheryInformationExtractor(
+                    str(source_path),
+                    str(restored_path),
+                    str(output_dir),
+                )
+
+            saved = json.loads(Path(result).read_text(encoding="utf-8"))
+            self.assertEqual(saved["template_tag"], "奇瑞")
+            self.assertEqual(saved["schema_version"], "1.1")
+            self.assertEqual(saved["basic_information"]["phone"], "13800138000")
+            self.assertEqual(saved["self_evaluation_source"], "generated")
+            chery_call.assert_called_once()
+            fallback_call.assert_not_called()
+
+    def test_chery_extractor_retries_missing_generated_sections(self) -> None:
+        """奇瑞首轮漏生成长文本时，执行一次受控补全而非直接待补充。"""
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            temp_path = Path(temp)
+            output_dir = temp_path / "outputs"
+            source_path = temp_path / "resume.pdf"
+            restored_path = temp_path / "resume_restored.md"
+            source_path.write_bytes(b"pdf")
+            restored_path.write_text(CHERY_MARKDOWN, encoding="utf-8")
+
+            first_pass = sample_chery_raw_data()
+            first_pass["self_evaluation"] = {
+                "text": "",
+                "source_type": "missing",
+                "evidence": [],
+                "note": "首轮遗漏",
+            }
+            first_pass["professional_skills"] = {
+                "text": "",
+                "source_type": "missing",
+                "evidence": [],
+                "note": "首轮遗漏",
+            }
+            first_pass["issues"] = [
+                {
+                    "field": "self_evaluation",
+                    "status": "missing",
+                    "evidence": "",
+                    "note": "首轮遗漏",
+                },
+                {
+                    "field": "professional_skills",
+                    "status": "missing",
+                    "evidence": "",
+                    "note": "首轮遗漏",
+                },
+            ]
+            generated = sample_chery_raw_data()
+            fallback_result = {
+                "self_evaluation": generated["self_evaluation"],
+                "professional_skills": generated["professional_skills"],
+            }
+
+            with (
+                patch.dict(
+                    extractor.os.environ,
+                    {
+                        "LLM_API_KEY": "offline-key",
+                        "LLM_BASE_URL": "http://127.0.0.1:1/v1",
+                        "LLM_MODEL": "offline-model",
+                    },
+                    clear=False,
+                ),
+                patch.object(extractor, "load_dotenv"),
+                patch.object(
+                    extractor,
+                    "call_llm_extract_chery",
+                    return_value=first_pass,
+                ),
+                patch.object(
+                    extractor,
+                    "_call_llm_complete_chery_narratives",
+                    return_value=fallback_result,
+                ) as fallback_call,
+                redirect_stdout(io.StringIO()),
+            ):
+                result = CheryInformationExtractor(
+                    str(source_path),
+                    str(restored_path),
+                    str(output_dir),
+                )
+
+            saved = json.loads(Path(result).read_text(encoding="utf-8"))
+            self.assertEqual(saved["self_evaluation_source"], "generated")
+            self.assertEqual(saved["professional_skills_source"], "generated")
+            fallback_call.assert_called_once()
+            stale_missing = {
+                issue["field"]
+                for issue in saved["extraction_issues"]
+                if issue["status"] == "missing"
+            }
+            self.assertNotIn("self_evaluation", stale_missing)
+            self.assertNotIn("professional_skills", stale_missing)
 
     def test_information_extractor_writes_json_and_updates_tracking(self) -> None:
         """提取成功生成JSON、汇总Excel并更新阶段状态。"""

@@ -17,7 +17,12 @@ from docx.oxml.ns import qn
 from lxml import etree
 from openpyxl import load_workbook
 
-from resume_generation import ResumeGenerator, YouzuResumeGenerator
+from resume_generation import (
+    CheryResumeGenerator,
+    ResumeGenerator,
+    YouzuResumeGenerator,
+)
+from resume_generation.chery_generator import AI_REFERENCE_NOTE
 from resume_generation.generator import (
     BODY_COLOR,
     FONT_NAME,
@@ -87,8 +92,158 @@ def sample_data(source_path: Path) -> dict:
     }
 
 
+def sample_chery_data(source_path: Path) -> dict:
+    """返回覆盖奇瑞字段、AI标记和缺失占位的数据。"""
+
+    return {
+        "template_tag": "奇瑞",
+        "source_file": str(source_path.resolve()),
+        "basic_information": {
+            "name": "李四",
+            "gender": "女",
+            "birth_date": "1995年6月",
+            "phone": "13800138000",
+            "email": "",
+            "native_place": "江苏南京",
+        },
+        "self_evaluation": "具备车载系统测试和版本验收经验。",
+        "self_evaluation_source": "generated",
+        "professional_skills": "1. 车载系统测试\n2. 缺陷跟踪与版本验收",
+        "professional_skills_source": "generated",
+        "work_experiences": [
+            {
+                "time": "2020/07-至今",
+                "company_name": "甲公司",
+                "position_name": "测试工程师",
+            },
+            {
+                "time": "2018/07-2020/06",
+                "company_name": "名称较长的乙科技有限公司",
+                "position_name": "助理工程师",
+            },
+        ],
+        "project_experiences": [
+            {
+                "project_name": "座舱测试项目",
+                "description": "负责测试方案设计和功能验证。",
+                "achievement": "完成三轮版本验收并推动关键问题闭环。",
+            }
+        ],
+        "education_experiences": [
+            {
+                "time": "2016/09-2020/06",
+                "school_name": "某大学",
+                "major": "电子信息工程",
+                "degree": "本科",
+            }
+        ],
+        "work_years": {"value": 6.0},
+        "extraction_issues": [],
+    }
+
+
 class ResumeGenerationTests(unittest.TestCase):
     """验证模板内容、两种基本资料模式及过程记录。"""
+
+    def test_generates_chery_resume_with_songti_and_ai_markers(self) -> None:
+        """奇瑞输出遵循六分区、宋体、列对齐、红色占位和AI确认规则。"""
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            temp_path = Path(temp)
+            output_dir = temp_path / "outputs"
+            source_path = temp_path / "resume.pdf"
+            json_path = temp_path / "resume_extracted.json"
+            source_path.write_bytes(b"pdf")
+            json_path.write_text(
+                json.dumps(sample_chery_data(source_path), ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(io.StringIO()):
+                result = CheryResumeGenerator(
+                    input_file=str(json_path),
+                    output_dir=str(output_dir),
+                )
+
+            self.assertIsNotNone(result)
+            result_path = Path(result)
+            document = Document(result_path)
+            text = _all_document_text(document)
+            for heading in (
+                "基本信息",
+                "自我评价",
+                "专业技能",
+                "工作经历",
+                "项目经验",
+                "教育背景",
+            ):
+                paragraph = next(
+                    item for item in document.paragraphs if item.text == heading
+                )
+                self.assertTrue(paragraph.runs[0].bold)
+                self.assertEqual(paragraph.runs[0].font.size.pt, 14)
+
+            self.assertIn(AI_REFERENCE_NOTE, text)
+            self.assertIn("邮箱：待补充", text)
+            self.assertNotIn("项目1：座舱测试项目", text)
+            project_number = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text == "项目1"
+            )
+            project_name = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text == "项目名称：座舱测试项目"
+            )
+            self.assertTrue(project_number.runs[0].bold)
+            self.assertTrue(project_name.runs[0].bold)
+            self.assertFalse(bool(project_name.runs[1].bold))
+            self.assertIn("项目描述：", text)
+            self.assertIn("工作业绩：", text)
+            self.assertIn(
+                "2016.09-2020.06 | 某大学 | 电子信息工程 | 本科",
+                text,
+            )
+            self.assertEqual(document.tables, [])
+            work_lines = [
+                paragraph.text
+                for paragraph in document.paragraphs
+                if paragraph.text.startswith(("2020.07", "2018.07"))
+            ]
+            self.assertEqual(len(work_lines), 2)
+            self.assertIn("2018.07-2020.06   名称较长的乙科技有限公司   助理工程师", work_lines)
+            self.assertTrue(work_lines[0].endswith("测试工程师"))
+            self.assertGreater(
+                work_lines[0].index("测试工程师"),
+                work_lines[0].index("甲公司") + len("甲公司") + 2,
+            )
+
+            placeholder_runs = [
+                run
+                for paragraph in document.paragraphs
+                for run in paragraph.runs
+                if run.text == "待补充"
+            ]
+            self.assertTrue(placeholder_runs)
+            self.assertTrue(
+                all(run.font.color.rgb == PLACEHOLDER_COLOR for run in placeholder_runs)
+            )
+            _assert_all_declared_fonts_are(
+                self,
+                result_path,
+                "宋体",
+            )
+
+            report = load_workbook(
+                output_dir / "final_resumes" / "待补充信息.xlsx",
+                data_only=True,
+            )
+            supplement = report["待补充信息"]["C2"].value
+            self.assertIn("请补充邮箱", supplement)
+            self.assertIn("请人工确认AI生成的自我评价", supplement)
+            self.assertIn("请人工确认AI生成的专业技能", supplement)
+            report.close()
 
     def test_generates_youzu_resume_without_photo_or_header(self) -> None:
         """优族复用无照片正文布局，并移除模板中的全部页眉引用和图形。"""
@@ -650,6 +805,16 @@ def _assert_all_declared_fonts_are_yahei(
 ) -> None:
     """检查所有显式Word字体声明均为微软雅黑。"""
 
+    _assert_all_declared_fonts_are(test_case, docx_path, FONT_NAME)
+
+
+def _assert_all_declared_fonts_are(
+    test_case: unittest.TestCase,
+    docx_path: Path,
+    expected_font: str,
+) -> None:
+    """检查所有显式Word字体声明均为指定字体。"""
+
     namespace = {
         "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
         "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
@@ -667,7 +832,7 @@ def _assert_all_declared_fonts_are_yahei(
                     value = fonts.get(qn(f"w:{attribute}"))
 
                     if value:
-                        test_case.assertEqual(value, FONT_NAME, name)
+                        test_case.assertEqual(value, expected_font, name)
 
             for face in root.xpath(
                 "//a:rPr/a:latin | //a:rPr/a:ea | //a:rPr/a:cs | "
@@ -676,6 +841,6 @@ def _assert_all_declared_fonts_are_yahei(
             ):
                 test_case.assertEqual(
                     face.get("typeface"),
-                    FONT_NAME,
+                    expected_font,
                     name,
                 )

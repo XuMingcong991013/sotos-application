@@ -30,6 +30,11 @@ SHEET_DEFINITIONS = {
         "恢复Markdown路径",
         "JSON路径",
         "提取问题数",
+        "出生年月",
+        "联系电话",
+        "邮箱",
+        "自我评价",
+        "自我评价来源",
     ),
     "工作经历": (
         "候选人ID",
@@ -52,6 +57,7 @@ SHEET_DEFINITIONS = {
         "结束时间",
         "项目描述",
         "JSON路径",
+        "工作业绩",
     ),
     "教育经历": (
         "候选人ID",
@@ -172,6 +178,11 @@ def _append_record(worksheets, data: dict[str, Any]) -> None:
             data.get("restored_markdown_file", ""),
             json_path,
             len(data.get("extraction_issues", [])),
+            basic.get("birth_date", ""),
+            basic.get("phone", ""),
+            basic.get("email", ""),
+            data.get("self_evaluation", ""),
+            data.get("self_evaluation_source", ""),
         )
     )
 
@@ -202,6 +213,7 @@ def _append_record(worksheets, data: dict[str, Any]) -> None:
                 item.get("end_date", ""),
                 item.get("description", ""),
                 json_path,
+                item.get("achievement", ""),
             )
         )
 
@@ -267,9 +279,9 @@ def _style_sheet(worksheet, sheet_name: str) -> None:
             )
 
     default_widths = {
-        "候选人汇总": [20, 12, 10, 12, 16, 48, 12, 12, 42, 42, 42, 42, 12],
+        "候选人汇总": [20, 12, 10, 12, 16, 48, 12, 12, 42, 42, 42, 42, 12, 16, 20, 28, 48, 14],
         "工作经历": [20, 12, 20, 12, 12, 28, 24, 56, 42],
-        "项目经历": [20, 12, 28, 24, 20, 12, 12, 56, 42],
+        "项目经历": [20, 12, 28, 24, 20, 12, 12, 56, 42, 56],
         "教育经历": [20, 12, 20, 20, 12, 12, 28, 12, 24, 42, 42],
         "提取问题": [20, 12, 34, 12, 48, 52, 42],
     }

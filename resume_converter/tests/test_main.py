@@ -61,6 +61,8 @@ class MainBatchTests(unittest.TestCase):
         self.assertFalse(TEMPLATE_OPTIONS["2"].with_photo)
         self.assertEqual(TEMPLATE_OPTIONS["3"].template_tag, "优族")
         self.assertFalse(TEMPLATE_OPTIONS["3"].with_photo)
+        self.assertEqual(TEMPLATE_OPTIONS["4"].template_tag, "奇瑞")
+        self.assertFalse(TEMPLATE_OPTIONS["4"].with_photo)
 
     def test_process_folder_continues_after_single_failure(self) -> None:
         """一份失败不影响下一份，并正确统计结果。"""

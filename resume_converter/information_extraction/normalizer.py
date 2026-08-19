@@ -17,20 +17,32 @@ BASIC_FIELDS = {
     "native_place": "籍贯",
 }
 
+CHERY_BASIC_FIELDS = {
+    "birth_date": "出生年月",
+    "phone": "联系电话",
+    "email": "邮箱",
+}
+
 
 def normalize_extraction(
     raw_data: dict[str, Any],
     source_markdown: str,
     calculation_date: date | None = None,
+    template_tag: str = "SOTOS",
 ) -> dict[str, Any]:
     """将LLM结果转换为可供Word模板直接使用的可信数据。"""
 
+    is_chery = template_tag.strip().upper() == "奇瑞"
     issues: list[dict[str, str]] = []
     field_evidence: dict[str, Any] = {}
     basic_information: dict[str, str] = {}
     raw_basic = _mapping(raw_data.get("basic_information"))
 
-    for field, label in BASIC_FIELDS.items():
+    basic_fields = dict(BASIC_FIELDS)
+    if is_chery:
+        basic_fields.update(CHERY_BASIC_FIELDS)
+
+    for field, label in basic_fields.items():
         item = _field_item(raw_basic.get(field))
         value = item["value"]
         evidence = item["evidence"]
@@ -76,6 +88,8 @@ def normalize_extraction(
             raw_data.get("professional_skills"),
             source_markdown,
             issues,
+            allow_inferred=not is_chery,
+            allow_generated=is_chery,
         )
     )
     field_evidence["professional_skills"] = (
@@ -87,6 +101,7 @@ def normalize_extraction(
         "work_experiences",
         source_markdown,
         issues,
+        allow_partial=is_chery,
     )
     work_experiences.sort(
         key=lambda item: _date_sort_key(
@@ -100,6 +115,8 @@ def normalize_extraction(
         "project_experiences",
         source_markdown,
         issues,
+        include_achievement=is_chery,
+        allow_partial=is_chery,
     )
 
     education_experiences = _normalize_education_list(
@@ -138,7 +155,7 @@ def normalize_extraction(
             _text(issue.get("note")) or "模型标记该信息不明确",
         )
 
-    return {
+    result = {
         "basic_information": basic_information,
         "professional_skills": skills,
         "professional_skills_source": skills_source,
@@ -149,6 +166,27 @@ def normalize_extraction(
         "field_evidence": field_evidence,
         "extraction_issues": _deduplicate_issues(issues),
     }
+
+    if is_chery:
+        evaluation, evaluation_source, evaluation_evidence = (
+            _normalize_narrative(
+                raw_data.get("self_evaluation"),
+                source_markdown,
+                issues,
+                field="self_evaluation",
+                label="自我评价",
+                allow_inferred=False,
+                allow_generated=True,
+            )
+        )
+        result["self_evaluation"] = evaluation
+        result["self_evaluation_source"] = evaluation_source
+        result["field_evidence"]["self_evaluation"] = (
+            evaluation_evidence
+        )
+        result["extraction_issues"] = _deduplicate_issues(issues)
+
+    return result
 
 
 def calculate_work_years(
@@ -292,8 +330,32 @@ def _normalize_skills(
     raw_value: Any,
     source_markdown: str,
     issues: list[dict[str, str]],
+    allow_inferred: bool = True,
+    allow_generated: bool = False,
 ) -> tuple[str, str, list[str]]:
     """保留技能原文形态，推导型技能只拼接可核验原文片段。"""
+
+    return _normalize_narrative(
+        raw_value,
+        source_markdown,
+        issues,
+        field="professional_skills",
+        label="专业技能",
+        allow_inferred=allow_inferred,
+        allow_generated=allow_generated,
+    )
+
+
+def _normalize_narrative(
+    raw_value: Any,
+    source_markdown: str,
+    issues: list[dict[str, str]],
+    field: str,
+    label: str,
+    allow_inferred: bool,
+    allow_generated: bool,
+) -> tuple[str, str, list[str]]:
+    """校验原文型或奇瑞专用AI生成型长文本及其依据。"""
 
     item = _mapping(raw_value)
     text = _text(item.get("text"))
@@ -309,7 +371,13 @@ def _normalize_skills(
         if _supported(value, source_markdown)
     ]
 
-    if source_type not in {"explicit", "inferred"}:
+    allowed_sources = {"explicit"}
+    if allow_inferred:
+        allowed_sources.add("inferred")
+    if allow_generated:
+        allowed_sources.add("generated")
+
+    if source_type not in allowed_sources:
         source_type = "missing"
 
     if source_type == "explicit" and _supported(
@@ -318,15 +386,25 @@ def _normalize_skills(
     ):
         return text, "explicit", valid_evidence or [text]
 
-    if valid_evidence:
+    if source_type == "generated" and text and valid_evidence:
+        _append_issue(
+            issues,
+            field,
+            "generated",
+            "\n".join(valid_evidence),
+            f"{label}由AI根据简历已有信息生成，仅供参考，需人工确认",
+        )
+        return text, "generated", valid_evidence
+
+    if allow_inferred and valid_evidence:
         return "\n".join(valid_evidence), "inferred", valid_evidence
 
     _append_issue(
         issues,
-        "professional_skills",
+        field,
         "missing",
         "",
-        "简历中没有可核验的专业技能正文或技能原文片段",
+        f"简历中没有可核验或可安全生成的{label}内容",
     )
     return "", "missing", []
 
@@ -336,6 +414,8 @@ def _normalize_experience_list(
     field_prefix: str,
     source_markdown: str,
     issues: list[dict[str, str]],
+    include_achievement: bool = False,
+    allow_partial: bool = False,
 ) -> list[dict[str, str]]:
     """校验并标准化工作或项目经历。"""
 
@@ -355,6 +435,9 @@ def _normalize_experience_list(
             ("position_name", "岗位名称"),
             ("description", "工作描述"),
         )
+
+        if is_project and include_achievement:
+            fields = (*fields, ("achievement", "工作业绩"))
 
         for field, label in fields:
             value = _text(item.get(field))
@@ -403,7 +486,21 @@ def _normalize_experience_list(
             "project_name" if is_project else "company_name"
         )
 
-        if normalized.get(primary_field):
+        has_partial_content = any(
+            normalized.get(field)
+            for field in (
+                "original_time",
+                "company_name",
+                "project_name",
+                "position_name",
+                "description",
+                "achievement",
+            )
+        )
+
+        if normalized.get(primary_field) or (
+            allow_partial and has_partial_content
+        ):
             result.append(normalized)
 
     return result

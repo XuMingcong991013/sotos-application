@@ -57,6 +57,11 @@ TEMPLATE_OPTIONS: dict[str, TemplateOption] = {
         template_tag="优族",
         with_photo=False,
     ),
+    "4": TemplateOption(
+        label="奇瑞",
+        template_tag="奇瑞",
+        with_photo=False,
+    ),
 }
 
 

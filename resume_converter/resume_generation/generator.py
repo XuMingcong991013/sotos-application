@@ -1259,6 +1259,12 @@ def _replace_xml_text(element: Any, old: str, new: str) -> None:
 def _force_microsoft_yahei(docx_path: Path) -> None:
     """在OOXML层强制所有WordprocessingML文本使用微软雅黑。"""
 
+    _force_word_font(docx_path, FONT_NAME)
+
+
+def _force_word_font(docx_path: Path, font_name: str) -> None:
+    """在OOXML层强制文档全部文本使用指定字体。"""
+
     patched_path = docx_path.with_name(
         f".{docx_path.stem}.font-patched.docx"
     )
@@ -1276,7 +1282,7 @@ def _force_microsoft_yahei(docx_path: Path) -> None:
                     item.filename.startswith("word/")
                     and item.filename.endswith(".xml")
                 ):
-                    content = _patch_xml_fonts(content)
+                    content = _patch_xml_fonts(content, font_name)
 
                 target.writestr(item, content)
 
@@ -1286,7 +1292,10 @@ def _force_microsoft_yahei(docx_path: Path) -> None:
             patched_path.unlink()
 
 
-def _patch_xml_fonts(content: bytes) -> bytes:
+def _patch_xml_fonts(
+    content: bytes,
+    font_name: str = FONT_NAME,
+) -> bytes:
     """只修改字体属性，不重排其他XML结构。"""
 
     from lxml import etree
@@ -1300,7 +1309,7 @@ def _patch_xml_fonts(content: bytes) -> bytes:
 
     for fonts in root.xpath("//w:rFonts", namespaces=namespaces):
         for attribute in ("ascii", "hAnsi", "eastAsia", "cs"):
-            fonts.set(qn(f"w:{attribute}"), FONT_NAME)
+            fonts.set(qn(f"w:{attribute}"), font_name)
 
         for attribute in (
             "asciiTheme",
@@ -1323,7 +1332,7 @@ def _patch_xml_fonts(content: bytes) -> bytes:
                     f"{{{namespaces['a']}}}{tag}",
                 )
 
-            child.set("typeface", FONT_NAME)
+            child.set("typeface", font_name)
 
     return etree.tostring(
         root,

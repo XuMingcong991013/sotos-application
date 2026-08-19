@@ -13,6 +13,7 @@ from openpyxl import load_workbook
 from resume_generation.supplement_report import (
     SUPPLEMENT_HEADERS,
     SUPPLEMENT_SHEET_NAME,
+    collect_chery_supplement_items,
     collect_supplement_items,
     update_supplement_report,
 )
@@ -20,6 +21,57 @@ from resume_generation.supplement_report import (
 
 class SupplementReportTests(unittest.TestCase):
     """验证必填规则、选填排除和同路径更新。"""
+
+    def test_chery_collects_extended_fields_and_ai_confirmation(self) -> None:
+        """奇瑞清单包含联系方式、项目业绩和AI内容确认。"""
+
+        data = {
+            "basic_information": {
+                "name": "李四",
+                "gender": "女",
+                "birth_date": "1995年6月",
+                "phone": "",
+                "email": "",
+                "native_place": "江苏南京",
+            },
+            "work_years": {"value": 6.0},
+            "self_evaluation": "AI评价",
+            "self_evaluation_source": "generated",
+            "professional_skills": "原文技能",
+            "professional_skills_source": "explicit",
+            "work_experiences": [
+                {
+                    "time": "2020/07-至今",
+                    "company_name": "甲公司",
+                    "position_name": "工程师",
+                }
+            ],
+            "project_experiences": [
+                {
+                    "project_name": "项目A",
+                    "description": "项目描述",
+                    "achievement": "",
+                }
+            ],
+            "education_experiences": [
+                {
+                    "time": "2016/09-2020/06",
+                    "school_name": "某大学",
+                    "major": "电子信息工程",
+                    "degree": "本科",
+                }
+            ],
+        }
+
+        self.assertEqual(
+            collect_chery_supplement_items(data),
+            [
+                "请补充联系电话",
+                "请补充邮箱",
+                "请人工确认AI生成的自我评价",
+                "请补充项目1的工作业绩",
+            ],
+        )
 
     def test_collects_only_required_missing_information(self) -> None:
         """工作描述及项目岗位、时间缺失时不应要求补充。"""
