@@ -88,6 +88,36 @@ def ResumeGenerator(
         真正异常写入过程数据错误日志并返回None。
     """
 
+    return _resume_generator(
+        input_file=input_file,
+        output_dir=output_dir,
+        with_photo=with_photo,
+        remove_headers=False,
+    )
+
+
+def YouzuResumeGenerator(
+    input_file: str,
+    output_dir: str,
+) -> str | None:
+    """使用无照片布局生成不含页眉的优族标准简历。"""
+
+    return _resume_generator(
+        input_file=input_file,
+        output_dir=output_dir,
+        with_photo=False,
+        remove_headers=True,
+    )
+
+
+def _resume_generator(
+    input_file: str,
+    output_dir: str,
+    with_photo: bool,
+    remove_headers: bool,
+) -> str | None:
+    """执行共用的标准简历生成、记录更新和错误处理流程。"""
+
     json_path = Path(input_file)
     output_root = Path(output_dir)
     process_directory = output_root / PROCESS_DATA_DIRNAME
@@ -128,6 +158,7 @@ def ResumeGenerator(
             data=data,
             output_path=final_path,
             with_photo=bool(with_photo),
+            remove_headers=remove_headers,
         )
         update_supplement_report(
             data=data,
@@ -181,12 +212,15 @@ def _generate_document(
     data: dict[str, Any],
     output_path: Path,
     with_photo: bool,
+    remove_headers: bool = False,
 ) -> None:
     """复制模板并按固定分区顺序写入结构化数据。"""
 
     document = Document(TEMPLATE_PATH)
     section_elements = _section_elements(document)
     _clear_document_body(document)
+    if remove_headers:
+        _remove_headers(document)
     _set_document_defaults(document)
 
     _append_section(document, section_elements["基本资料"])
@@ -263,6 +297,33 @@ def _clear_document_body(document: Document) -> None:
     for child in list(body):
         if child.tag != qn("w:sectPr"):
             body.remove(child)
+
+
+def _remove_headers(document: Document) -> None:
+    """清空页眉部件并解除所有节的页眉引用。"""
+
+    header_parts: dict[str, Any] = {}
+    for relationship in document.part.rels.values():
+        if relationship.reltype == RELATIONSHIP_TYPE.HEADER:
+            header_parts[str(relationship.target_part.partname)] = (
+                relationship.target_part
+            )
+
+    for header_part in header_parts.values():
+        header_element = header_part.element
+        for child in list(header_element):
+            header_element.remove(child)
+        # 保留一个合法空段落，避免部分Word版本修复空页眉部件。
+        header_element.append(OxmlElement("w:p"))
+        for relationship_id in list(header_part.rels):
+            header_part.drop_rel(relationship_id)
+
+    for section in document.sections:
+        section_properties = section._sectPr
+        for reference in list(
+            section_properties.findall(qn("w:headerReference"))
+        ):
+            section_properties.remove(reference)
 
 
 def _append_section(document: Document, element: Any) -> None:

@@ -99,6 +99,59 @@ class ResumePipelineTests(unittest.TestCase):
         extractor.assert_not_called()
         generator.assert_not_called()
 
+    def test_youzu_pipeline_uses_shared_extraction_and_headerless_generator(
+        self,
+    ) -> None:
+        """优族复用公共解析提取，并调用固定无照片的无页眉生成器。"""
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            temp_path = Path(temp)
+            source_path = temp_path / "resume.pdf"
+            output_dir = temp_path / "output"
+            restored_path = output_dir / "resume_restored.md"
+            json_path = output_dir / "resume_extracted.json"
+            word_path = output_dir / "final_resumes" / "resume_标准简历.docx"
+            source_path.write_bytes(b"pdf")
+
+            with (
+                patch.object(
+                    resume_pipeline,
+                    "DataParser",
+                    return_value=str(restored_path),
+                ) as data_parser,
+                patch.object(
+                    resume_pipeline,
+                    "InformationExtractor",
+                    return_value=str(json_path),
+                ) as extractor,
+                patch.object(
+                    resume_pipeline,
+                    "YouzuResumeGenerator",
+                    return_value=str(word_path),
+                ) as generator,
+            ):
+                result = ResumeConverter(
+                    str(source_path),
+                    str(output_dir),
+                    " 优族 ",
+                    True,
+                )
+
+            self.assertEqual(result, str(word_path))
+            data_parser.assert_called_once_with(
+                input_file_path=str(source_path),
+                output_dir=str(output_dir),
+            )
+            extractor.assert_called_once_with(
+                input_file_path=str(source_path),
+                input_file=str(restored_path),
+                output_dir=str(output_dir),
+            )
+            generator.assert_called_once_with(
+                input_file=str(json_path),
+                output_dir=str(output_dir),
+            )
+
     def test_extraction_failure_stops_word_generation(self) -> None:
         """模板专用信息提取失败后不生成Word。"""
 

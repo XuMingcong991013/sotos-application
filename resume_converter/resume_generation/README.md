@@ -17,7 +17,7 @@ word_file = ResumeConverter(
 print(word_file)
 ```
 
-模板标签不区分大小写，当前仅支持 `SOTOS`。`with_photo=False` 生成两栏基本资料，`with_photo=True` 生成带证件照占位的 `2:2:1` 基本资料。模板标签或证件照模式无效时，会在调用百度和LLM之前被拒绝，并写入统一错误日志。
+模板标签不区分大小写，当前支持 `SOTOS` 和 `优族`。SOTOS 的 `with_photo=False` 生成三行两列基本资料，`with_photo=True` 生成带证件照占位的 `2:2:1` 基本资料；优族固定复用 SOTOS 无照片正文布局，并移除全部页眉。模板标签或证件照模式无效时，会在调用百度和LLM之前被拒绝，并写入统一错误日志。
 
 ## 只执行Word生成阶段
 
@@ -78,3 +78,5 @@ output_dir/process_data/processing_records.xlsx
 ```
 
 `ResumeGenerator` 用于已有结构化JSON时单独调试Word生成阶段。`template_builder.py` 仅用于标准模板设计发生变化时，从新的人工参考文档重新提炼清洁模板。
+
+优族单独调试 Word 生成阶段时，可调用 `YouzuResumeGenerator(input_file, output_dir)`；它与 `ResumeGenerator(..., with_photo=False)` 共用正文生成逻辑，只额外移除页眉。

@@ -2,7 +2,7 @@
 单份原始简历到标准Word简历的统一流程入口。
 
 文档解析流程对所有模板标签共用；信息提取和Word生成由模板标签分发。
-当前仅支持SOTOS标签，后续新增模板时只需注册新的后半程处理函数。
+当前支持SOTOS和优族标签，后续新增模板时只需注册新的后半程处理函数。
 """
 
 from __future__ import annotations
@@ -12,12 +12,13 @@ from pathlib import Path
 
 from data_parser import DataParser
 from information_extraction import InformationExtractor
-from resume_generation import ResumeGenerator
+from resume_generation import ResumeGenerator, YouzuResumeGenerator
 from utils.error_logging import write_error_log
 
 
 PROCESS_DATA_DIRNAME = "process_data"
 SOTOS_TEMPLATE_TAG = "SOTOS"
+YOUZU_TEMPLATE_TAG = "优族"
 
 TemplateHandler = Callable[[str, str, str, bool], str | None]
 
@@ -34,8 +35,8 @@ def ResumeConverter(
     Args:
         input_file_path: 原始PDF、DOCX、JPG、JPEG或PNG文件路径。
         output_dir: 过程数据和最终结果的输出根目录。
-        template_tag: 模板标签；当前支持SOTOS，不区分大小写。
-        with_photo: SOTOS是否生成证件照占位区域。
+        template_tag: 模板标签；当前支持SOTOS和优族，不区分大小写。
+        with_photo: SOTOS是否生成证件照占位区域；优族固定为无照片。
 
     Returns:
         成功时返回最终Word文件的绝对路径；任一阶段失败时返回None。
@@ -111,6 +112,30 @@ def _run_sotos_pipeline(
     )
 
 
+def _run_youzu_pipeline(
+    input_file_path: str,
+    restored_file: str,
+    output_dir: str,
+    with_photo: bool,
+) -> str | None:
+    """执行优族标签流程，并强制使用无照片、无页眉版式。"""
+
+    extracted_json = InformationExtractor(
+        input_file_path=input_file_path,
+        input_file=restored_file,
+        output_dir=output_dir,
+    )
+
+    if not extracted_json:
+        return None
+
+    print("\n  [阶段 3/3] 标准 Word 与补充清单生成")
+    return YouzuResumeGenerator(
+        input_file=extracted_json,
+        output_dir=output_dir,
+    )
+
+
 def _normalize_template_tag(template_tag: str) -> str:
     """规范化模板标签，并拒绝空值或非字符串输入。"""
 
@@ -135,4 +160,5 @@ def _validate_with_photo(with_photo: bool) -> None:
 # 标签只控制信息提取和Word生成，DataParser始终位于分发之前。
 TEMPLATE_HANDLERS: dict[str, TemplateHandler] = {
     SOTOS_TEMPLATE_TAG: _run_sotos_pipeline,
+    YOUZU_TEMPLATE_TAG: _run_youzu_pipeline,
 }

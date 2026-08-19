@@ -17,7 +17,7 @@ from docx.oxml.ns import qn
 from lxml import etree
 from openpyxl import load_workbook
 
-from resume_generation import ResumeGenerator
+from resume_generation import ResumeGenerator, YouzuResumeGenerator
 from resume_generation.generator import (
     BODY_COLOR,
     FONT_NAME,
@@ -89,6 +89,59 @@ def sample_data(source_path: Path) -> dict:
 
 class ResumeGenerationTests(unittest.TestCase):
     """验证模板内容、两种基本资料模式及过程记录。"""
+
+    def test_generates_youzu_resume_without_photo_or_header(self) -> None:
+        """优族复用无照片正文布局，并移除模板中的全部页眉引用和图形。"""
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            temp_path = Path(temp)
+            output_dir = temp_path / "outputs"
+            json_path = temp_path / "resume_extracted.json"
+            source_path = temp_path / "resume.pdf"
+            source_path.write_bytes(b"pdf")
+            json_path.write_text(
+                json.dumps(sample_data(source_path), ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            with redirect_stdout(io.StringIO()):
+                result = YouzuResumeGenerator(
+                    input_file=str(json_path),
+                    output_dir=str(output_dir),
+                )
+
+            self.assertIsNotNone(result)
+            result_path = Path(result)
+            document = Document(result_path)
+            self.assertEqual(len(document.tables[0].rows), 3)
+            self.assertEqual(len(document.tables[0].columns), 2)
+            self.assertIn("Project Experience", _all_document_text(document))
+
+            with ZipFile(result_path) as archive:
+                document_root = etree.fromstring(
+                    archive.read("word/document.xml")
+                )
+                self.assertEqual(
+                    document_root.xpath(
+                        "//w:headerReference",
+                        namespaces={"w": qn("w:document").split("}")[0][1:]},
+                    ),
+                    [],
+                )
+                for name in archive.namelist():
+                    if not name.startswith("word/header") or not name.endswith(
+                        ".xml"
+                    ):
+                        continue
+                    header_root = etree.fromstring(archive.read(name))
+                    self.assertFalse(
+                        header_root.xpath(
+                            ".//w:t | .//w:drawing | .//w:pict",
+                            namespaces={
+                                "w": qn("w:document").split("}")[0][1:]
+                            },
+                        )
+                    )
 
     def test_generates_no_photo_resume_and_updates_tracking(self) -> None:
         """无证件照模式生成两栏资料区并更新Word生成状态。"""

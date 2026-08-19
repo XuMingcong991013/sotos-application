@@ -52,6 +52,11 @@ TEMPLATE_OPTIONS: dict[str, TemplateOption] = {
         template_tag="SOTOS",
         with_photo=False,
     ),
+    "3": TemplateOption(
+        label="优族 - 无照片",
+        template_tag="优族",
+        with_photo=False,
+    ),
 }
 
 
