@@ -359,6 +359,136 @@ class ReferenceTextTests(unittest.TestCase):
 class RestoreMarkdownTests(unittest.TestCase):
     """验证结构恢复警告不会中断最终文件生成。"""
 
+    def test_email_missing_underscore_is_corrected_from_source(self) -> None:
+        """OCR漏掉邮箱下划线时采用唯一的原文文本层候选。"""
+
+        corrected, corrected_reference, messages, requires_review = (
+            restore_markdown.reconcile_email_identifiers(
+                original_markdown="邮箱：huyunqiangjob@163.com",
+                source_reference_text="邮箱：huyunqiang_job@163.com",
+            )
+        )
+
+        self.assertEqual(
+            corrected,
+            "邮箱：huyunqiang_job@163.com",
+        )
+        self.assertEqual(
+            corrected_reference,
+            "邮箱：huyunqiang_job@163.com",
+        )
+        self.assertEqual(len(messages), 1)
+        self.assertIn("邮箱已根据原文件文本层校正", messages[0])
+        self.assertFalse(requires_review)
+
+    def test_ambiguous_email_candidates_are_not_corrected(self) -> None:
+        """多个等价原文候选无法归属时转为待补充。"""
+
+        original = "邮箱：huyunqiangjob@163.com"
+        corrected, corrected_reference, messages, requires_review = (
+            restore_markdown.reconcile_email_identifiers(
+                original_markdown=original,
+                source_reference_text=(
+                    "邮箱一：huyunqiang_job@163.com\n"
+                    "邮箱二：huyunqiang.job@163.com"
+                ),
+            )
+        )
+
+        self.assertEqual(corrected, "邮箱：待补充")
+        self.assertNotIn("@163.com", corrected_reference)
+        self.assertEqual(corrected_reference.count("待补充"), 2)
+        self.assertEqual(len(messages), 1)
+        self.assertIn("用户可见的待补充项", messages[0])
+        self.assertTrue(requires_review)
+
+    def test_exact_email_evidence_wins_over_similar_candidates(self) -> None:
+        """原文有OCR邮箱的完全匹配时不因其他相似邮箱而误报歧义。"""
+
+        original = "邮箱：first.last@example.com"
+        source = (
+            "个人邮箱：first.last@example.com\n"
+            "备用邮箱：first_last@example.com"
+        )
+
+        corrected, corrected_reference, messages, requires_review = (
+            restore_markdown.reconcile_email_identifiers(
+                original_markdown=original,
+                source_reference_text=source,
+            )
+        )
+
+        self.assertEqual(corrected, original)
+        self.assertEqual(corrected_reference, source)
+        self.assertEqual(messages, [])
+        self.assertFalse(requires_review)
+
+    def test_restore_llm_receives_reconciled_email(self) -> None:
+        """LLM和后续校验使用校正后的邮箱，而非错误OCR值。"""
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as temp:
+            temp_path = Path(temp)
+            source_path = temp_path / "resume.pdf"
+            input_path = temp_path / "resume.md"
+            output_path = temp_path / "resume_restored.md"
+            source_path.write_bytes(b"pdf")
+            input_path.write_text(
+                "邮箱：huyunqiangjob@163.com",
+                encoding="utf-8",
+            )
+
+            def fake_restore(
+                original_markdown: str,
+                source_reference_text: str,
+                base_url: str,
+                model: str,
+                api_key: str,
+            ) -> str:
+                self.assertIn(
+                    "huyunqiang_job@163.com",
+                    original_markdown,
+                )
+                self.assertNotIn(
+                    "huyunqiangjob@163.com",
+                    original_markdown,
+                )
+                return original_markdown
+
+            with (
+                patch.dict(
+                    restore_markdown.os.environ,
+                    {
+                        "LLM_API_KEY": "offline-test-key",
+                        "LLM_BASE_URL": "http://127.0.0.1:1/v1",
+                        "LLM_MODEL": "offline-test-model",
+                    },
+                    clear=False,
+                ),
+                patch.object(restore_markdown, "load_dotenv"),
+                patch.object(
+                    restore_markdown,
+                    "extract_reference_text",
+                    return_value="邮箱：huyunqiang_job@163.com",
+                ),
+                patch.object(
+                    restore_markdown,
+                    "call_llm_restore",
+                    side_effect=fake_restore,
+                ),
+                redirect_stdout(io.StringIO()),
+            ):
+                result = restore_markdown.RestoreMarkdown(
+                    str(source_path),
+                    str(input_path),
+                    str(output_path),
+                )
+
+            self.assertEqual(result, str(output_path.resolve()))
+            self.assertEqual(
+                output_path.read_text(encoding="utf-8"),
+                "邮箱：huyunqiang_job@163.com",
+            )
+
     def test_validation_warning_does_not_block_output(self) -> None:
         """即使自动校验告警，仍写文件并返回绝对路径。"""
 

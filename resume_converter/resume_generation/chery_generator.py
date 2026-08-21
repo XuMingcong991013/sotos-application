@@ -344,11 +344,14 @@ def _add_project_experiences(
             _text(project.get("project_name")),
         )
 
-        _add_project_block(
+        description_tail = _add_project_block(
             document,
             "项目描述：",
             _text(project.get("description")),
         )
+        # 避免工作业绩标签单独出现在下一页顶部，至少与项目描述
+        # 的最后一段保持在同一页。
+        description_tail.paragraph_format.keep_with_next = True
         _add_project_block(
             document,
             "工作业绩：",
@@ -373,7 +376,7 @@ def _add_project_block(
     document: Document,
     label: str,
     text: str,
-) -> None:
+) -> Any:
     """写入加粗项目子标题及对应Markdown正文。"""
 
     heading = document.add_paragraph()
@@ -388,8 +391,10 @@ def _add_project_block(
             color=BODY_COLOR,
             document=document,
         )
+        return document.paragraphs[-1]
     else:
         _add_placeholder(heading)
+        return heading
 
 
 def _add_education_experiences(

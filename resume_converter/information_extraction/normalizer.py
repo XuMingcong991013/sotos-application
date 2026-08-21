@@ -23,6 +23,8 @@ CHERY_BASIC_FIELDS = {
     "email": "邮箱",
 }
 
+EMAIL_REVIEW_MARKER = "<!-- EMAIL_REQUIRES_MANUAL_REVIEW -->"
+
 
 def normalize_extraction(
     raw_data: dict[str, Any],
@@ -37,6 +39,9 @@ def normalize_extraction(
     field_evidence: dict[str, Any] = {}
     basic_information: dict[str, str] = {}
     raw_basic = _mapping(raw_data.get("basic_information"))
+    email_requires_manual_review = (
+        EMAIL_REVIEW_MARKER in source_markdown
+    )
 
     basic_fields = dict(BASIC_FIELDS)
     if is_chery:
@@ -60,6 +65,9 @@ def normalize_extraction(
         ):
             evidence_valid = False
 
+        if field == "email" and email_requires_manual_review:
+            evidence_valid = False
+
         if value and evidence_valid:
             basic_information[field] = value
             field_evidence[
@@ -76,9 +84,13 @@ def normalize_extraction(
                     f"简历中没有可核验的{label}信息"
                     if not evidence
                     else (
-                        "原文没有明确标注籍贯或祖籍，不能用现居地等信息代替"
-                        if field == "native_place"
-                        else f"{label}与原文依据无法相互验证"
+                        "原文存在多个相似邮箱候选，需要人工确认"
+                        if field == "email" and email_requires_manual_review
+                        else (
+                            "原文没有明确标注籍贯或祖籍，不能用现居地等信息代替"
+                            if field == "native_place"
+                            else f"{label}与原文依据无法相互验证"
+                        )
                     )
                 ),
             )
@@ -118,6 +130,12 @@ def normalize_extraction(
         include_achievement=is_chery,
         allow_partial=is_chery,
     )
+    project_experiences = _restore_explicit_project_blocks(
+        project_experiences,
+        source_markdown,
+        issues,
+        include_achievement=is_chery,
+    )
 
     education_experiences = _normalize_education_list(
         raw_data.get("education_experiences"),
@@ -154,6 +172,11 @@ def normalize_extraction(
             _text(issue.get("evidence")),
             _text(issue.get("note")) or "模型标记该信息不明确",
         )
+
+    issues = _remove_resolved_project_issues(
+        issues,
+        project_experiences,
+    )
 
     result = {
         "basic_information": basic_information,
@@ -503,6 +526,345 @@ def _normalize_experience_list(
         ):
             result.append(normalized)
 
+    return result
+
+
+def _restore_explicit_project_blocks(
+    projects: list[dict[str, str]],
+    source_markdown: str,
+    issues: list[dict[str, str]],
+    include_achievement: bool = False,
+) -> list[dict[str, str]]:
+    """用Markdown中的完整项目块补回模型省略的项目正文。"""
+
+    result = [dict(item) for item in projects]
+
+    for project_name, project_body in _extract_explicit_project_blocks(
+        source_markdown
+    ):
+        description_body = project_body
+        recovered_achievement = ""
+        if include_achievement:
+            description_body, recovered_achievement = (
+                _split_project_achievement(project_body)
+            )
+        description_body = _strip_project_description_label(
+            description_body
+        )
+        matched_index = _find_project_index(result, project_name)
+
+        if matched_index is None:
+            recovered = {
+                "project_name": project_name,
+                "position_name": "",
+                "original_time": "",
+                **normalize_date_range(""),
+                "description": description_body,
+            }
+            if include_achievement:
+                recovered["achievement"] = recovered_achievement
+            result.append(recovered)
+            _append_issue(
+                issues,
+                f"project_experiences[{len(result) - 1}]",
+                "recovered",
+                project_name,
+                "模型漏提该项目，已从恢复后Markdown完整补回",
+            )
+            continue
+
+        existing_description = _text(
+            result[matched_index].get("description")
+        )
+        complete_description = _merge_project_content(
+            existing_description,
+            description_body,
+        )
+        if complete_description != existing_description:
+            result[matched_index]["description"] = complete_description
+            _append_issue(
+                issues,
+                f"project_experiences[{matched_index}].description",
+                "recovered",
+                project_name,
+                "模型未完整保留项目正文，已从恢复后Markdown补回",
+            )
+
+        if include_achievement and recovered_achievement:
+            existing_achievement = _text(
+                result[matched_index].get("achievement")
+            )
+            complete_achievement = _merge_project_content(
+                existing_achievement,
+                recovered_achievement,
+            )
+            if complete_achievement != existing_achievement:
+                result[matched_index]["achievement"] = complete_achievement
+                _append_issue(
+                    issues,
+                    f"project_experiences[{matched_index}].achievement",
+                    "recovered",
+                    project_name,
+                    "模型未完整保留工作业绩，已从恢复后Markdown补回",
+                )
+
+    return result
+
+
+def _extract_explicit_project_blocks(
+    source_markdown: str,
+) -> list[tuple[str, str]]:
+    """提取项目分区中由下一级Markdown标题划分的完整项目块。"""
+
+    lines = source_markdown.splitlines()
+    headings: list[tuple[int, int, str]] = []
+    heading_pattern = re.compile(r"^(#{1,6})[ \t]+(.+?)\s*$")
+
+    for index, line in enumerate(lines):
+        match = heading_pattern.match(line)
+        if match:
+            headings.append((index, len(match.group(1)), match.group(2)))
+
+    blocks: list[tuple[str, str]] = []
+    for heading_index, (line_index, level, title) in enumerate(headings):
+        if not _is_project_section_heading(title):
+            continue
+
+        section_end = len(lines)
+        for next_line, next_level, _ in headings[heading_index + 1 :]:
+            if next_level <= level:
+                section_end = next_line
+                break
+
+        project_headings = [
+            (candidate_line, candidate_title)
+            for candidate_line, candidate_level, candidate_title in headings
+            if line_index < candidate_line < section_end
+            and candidate_level == level + 1
+            and not _is_project_content_subheading(candidate_title)
+        ]
+
+        for project_index, (project_line, project_title) in enumerate(
+            project_headings
+        ):
+            block_end = (
+                project_headings[project_index + 1][0]
+                if project_index + 1 < len(project_headings)
+                else section_end
+            )
+            body = "\n".join(lines[project_line + 1 : block_end]).strip()
+            project_name = _project_name_from_heading(
+                project_title,
+                body,
+            )
+            if project_name:
+                blocks.append((project_name, body))
+
+    return blocks
+
+
+def _is_project_section_heading(title: str) -> bool:
+    """判断标题是否为项目经历分区。"""
+
+    plain = _plain_markdown_heading(title)
+    return bool(
+        re.fullmatch(
+            r"项目(?:经历|经验|案例)"
+            r"(?:\s*[|｜/\-]?\s*Project\s+Experience)?",
+            plain,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
+def _is_project_content_subheading(title: str) -> bool:
+    """避免把与项目标题同级的正文子标题误识别成新项目。"""
+
+    plain = _plain_markdown_heading(title)
+    return plain in {
+        "项目描述",
+        "应用技术",
+        "主要职责",
+        "工作内容",
+        "功能说明",
+        "实现细节",
+        "工作业绩",
+        "项目成果",
+        "职责描述",
+        "责任描述",
+        "技术栈",
+    }
+
+
+def _project_name_from_heading(title: str, body: str) -> str:
+    """从项目标题或正文中的项目名称标签取得名称。"""
+
+    plain = _plain_markdown_heading(title)
+    plain = re.sub(
+        r"^项目(?:\d+|[一二三四五六七八九十百]+)\s*[:：、.\-]\s*",
+        "",
+        plain,
+    )
+    plain = re.split(r"[|｜]", plain, maxsplit=1)[0].strip()
+
+    if re.fullmatch(r"项目(?:\d+|[一二三四五六七八九十百]+)", plain):
+        name_match = re.search(
+            r"^(?:\*\*)?项目名称\s*[:：](?:\*\*)?\s*(.+?)\s*$",
+            body,
+            flags=re.MULTILINE,
+        )
+        if name_match:
+            plain = _plain_markdown_heading(name_match.group(1))
+
+    return plain
+
+
+def _plain_markdown_heading(value: str) -> str:
+    """去除标题中的常见Markdown控制符。"""
+
+    plain = value.strip()
+    for pattern in (
+        r"\*\*(.+?)\*\*",
+        r"__(.+?)__",
+        r"~~(.+?)~~",
+        r"`([^`]+)`",
+    ):
+        plain = re.sub(pattern, r"\1", plain)
+    return plain.strip().rstrip(":：")
+
+
+def _find_project_index(
+    projects: list[dict[str, str]],
+    project_name: str,
+) -> int | None:
+    """按项目名称匹配模型结果与Markdown项目块。"""
+
+    target = _comparable_project_name(project_name)
+    if not target:
+        return None
+
+    for index, project in enumerate(projects):
+        candidate = _comparable_project_name(
+            _text(project.get("project_name"))
+        )
+        if not candidate:
+            continue
+        if candidate == target:
+            return index
+        if min(len(candidate), len(target)) >= 4 and (
+            candidate in target or target in candidate
+        ):
+            return index
+
+    return None
+
+
+def _comparable_project_name(value: str) -> str:
+    """生成仅用于项目名称匹配的保守比较文本。"""
+
+    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", value.casefold())
+
+
+def _merge_project_content(existing: str, complete_body: str) -> str:
+    """优先采用完整项目块，并保留块外但可核验的模型描述。"""
+
+    if not complete_body:
+        return existing
+    if not existing:
+        return complete_body
+
+    compact_existing = re.sub(r"\s+", "", existing)
+    compact_body = re.sub(r"\s+", "", complete_body)
+    if compact_existing in compact_body:
+        return complete_body
+    if compact_body in compact_existing:
+        return existing
+    return f"{complete_body}\n\n{existing}"
+
+
+def _split_project_achievement(project_body: str) -> tuple[str, str]:
+    """从奇瑞项目正文中分离明确标注的工作业绩，避免重复展示。"""
+
+    lines = project_body.splitlines()
+    achievement_start: int | None = None
+    inline_achievement = ""
+    label_pattern = re.compile(
+        r"^\s*(?:#{1,6}\s*)?(?:\*\*)?工作业绩\s*[:：]"
+        r"(?:\*\*)?\s*(.*?)\s*$"
+    )
+
+    for index, line in enumerate(lines):
+        match = label_pattern.match(line)
+        if match:
+            achievement_start = index
+            inline_achievement = match.group(1).strip()
+            break
+
+    if achievement_start is None:
+        return project_body, ""
+
+    achievement_end = len(lines)
+    next_label_pattern = re.compile(
+        r"^\s*(?:#{1,6}\s*)?(?:\*\*)?"
+        r"(?:项目描述|应用技术|主要职责|功能说明|实现细节|项目成果)"
+        r"\s*[:：](?:\*\*)?"
+    )
+    for index in range(achievement_start + 1, len(lines)):
+        if next_label_pattern.match(lines[index]):
+            achievement_end = index
+            break
+
+    achievement_lines = []
+    if inline_achievement:
+        achievement_lines.append(inline_achievement)
+    achievement_lines.extend(lines[achievement_start + 1 : achievement_end])
+    achievement = "\n".join(achievement_lines).strip()
+
+    description_lines = (
+        lines[:achievement_start] + lines[achievement_end:]
+    )
+    description = "\n".join(description_lines).strip()
+    return description, achievement
+
+
+def _strip_project_description_label(project_body: str) -> str:
+    """移除项目块内层的描述标签，避免与Word固定标签重复。"""
+
+    lines = project_body.splitlines()
+    label_pattern = re.compile(
+        r"^\s*(?:#{1,6}\s*)?(?:\*\*)?项目描述\s*[:：]"
+        r"(?:\*\*)?\s*(.*?)\s*$"
+    )
+    for index, line in enumerate(lines):
+        match = label_pattern.match(line)
+        if not match:
+            continue
+        inline_description = match.group(1).strip()
+        replacement = [inline_description] if inline_description else []
+        lines[index : index + 1] = replacement
+        break
+    return "\n".join(lines).strip()
+
+
+def _remove_resolved_project_issues(
+    issues: list[dict[str, str]],
+    projects: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """移除项目补回后已经失效的缺失或歧义记录。"""
+
+    result = []
+    pattern = re.compile(
+        r"^project_experiences\[(\d+)\]\."
+        r"(project_name|description|achievement)$"
+    )
+    for issue in issues:
+        match = pattern.fullmatch(_text(issue.get("field")))
+        if match and _text(issue.get("status")) in {"missing", "ambiguous"}:
+            index = int(match.group(1))
+            field = match.group(2)
+            if index < len(projects) and _text(projects[index].get(field)):
+                continue
+        result.append(issue)
     return result
 
 

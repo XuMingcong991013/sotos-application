@@ -254,12 +254,146 @@ def sample_chery_raw_data() -> dict:
 class NormalizerTests(unittest.TestCase):
     """验证业务规则和防编造校验。"""
 
+    def test_ambiguous_email_marker_forces_user_visible_missing_value(self) -> None:
+        """邮箱冲突标记强制清空字段并进入奇瑞待补充流程。"""
+
+        result = normalize_extraction(
+            sample_chery_raw_data(),
+            CHERY_MARKDOWN + "\n<!-- EMAIL_REQUIRES_MANUAL_REVIEW -->\n",
+            calculation_date=date(2026, 8, 1),
+            template_tag="奇瑞",
+        )
+
+        self.assertEqual(result["basic_information"]["email"], "")
+        email_issues = [
+            issue
+            for issue in result["extraction_issues"]
+            if issue["field"] == "basic_information.email"
+        ]
+        self.assertEqual(len(email_issues), 1)
+        self.assertIn("需要人工确认", email_issues[0]["note"])
+
     def test_prompt_recognizes_products_without_project_section(self) -> None:
         """提示词要求识别工作经历内的明确产品型项目。"""
 
         self.assertIn("项目不要求出现在独立的", extractor.SYSTEM_PROMPT)
         self.assertIn("主要产品有", extractor.SYSTEM_PROMPT)
         self.assertIn("按原文产品组整体保留", extractor.SYSTEM_PROMPT)
+        self.assertIn("完整内容容器", extractor.SYSTEM_PROMPT)
+        self.assertIn("不是内容筛选条件", extractor.CHERY_SYSTEM_PROMPT)
+
+    def test_explicit_project_blocks_restore_all_markdown_content(self) -> None:
+        """模型只返回概述时，校验层补回项目下的全部原文。"""
+
+        markdown = """
+# 王五
+
+## 项目经历
+### Gate
+**项目描述：** 全球数字资产交易平台。
+
+**应用技术：**
+- 使用 Flutter 和 Riverpod 搭建模块
+- 通过 Platform Channels 接入原生能力
+- 使用 WebSocket 处理实时行情
+
+### 实现细节
+- 优化列表帧率和安装包体积
+
+### APDU_SDK
+**项目描述：** 安全通信组件。
+
+**应用技术：**
+- 支持 SM2、SM3、SM4
+- 支持串口、NFC 和 U 口通信
+
+## 教育经历
+2016-2020 某大学 本科 软件工程
+""".strip()
+        raw_data = {
+            "basic_information": {},
+            "professional_skills": {},
+            "work_experiences": [],
+            "project_experiences": [
+                {
+                    "project_name": "Gate",
+                    "position_name": "",
+                    "original_time": "",
+                    "description": "全球数字资产交易平台。",
+                    "evidence": {
+                        "project_name": "Gate",
+                        "position_name": "",
+                        "original_time": "",
+                        "description": "全球数字资产交易平台。",
+                    },
+                }
+            ],
+            "education_experiences": [],
+            "issues": [],
+        }
+
+        result = normalize_extraction(
+            raw_data,
+            markdown,
+            calculation_date=date(2026, 8, 1),
+        )
+
+        self.assertEqual(len(result["project_experiences"]), 2)
+        gate = result["project_experiences"][0]
+        self.assertFalse(gate["description"].startswith("**项目描述：**"))
+        self.assertTrue(gate["description"].startswith("全球数字资产交易平台"))
+        self.assertIn("**应用技术：**", gate["description"])
+        self.assertIn("Platform Channels", gate["description"])
+        self.assertIn("### 实现细节", gate["description"])
+        self.assertIn("优化列表帧率和安装包体积", gate["description"])
+
+        recovered = result["project_experiences"][1]
+        self.assertEqual(recovered["project_name"], "APDU_SDK")
+        self.assertIn("SM2、SM3、SM4", recovered["description"])
+        self.assertIn("串口、NFC 和 U 口通信", recovered["description"])
+        self.assertTrue(
+            any(
+                issue["status"] == "recovered"
+                for issue in result["extraction_issues"]
+            )
+        )
+
+    def test_chery_project_recovery_preserves_achievement_and_extra_content(
+        self,
+    ) -> None:
+        """奇瑞工作业绩单列时，其他项目原文仍完整进入项目描述。"""
+
+        markdown = """
+## 项目经验
+### 座舱测试项目
+**项目描述：** 负责测试方案设计和功能验证。
+
+**应用技术：**
+- 使用自动化平台执行回归测试
+- 跟踪缺陷并完成版本验收
+
+**工作业绩：** 完成三轮版本验收并推动关键问题闭环。
+""".strip()
+        raw_data = sample_chery_raw_data()
+        raw_data["project_experiences"][0]["description"] = (
+            "负责测试方案设计和功能验证。"
+        )
+
+        result = normalize_extraction(
+            raw_data,
+            CHERY_MARKDOWN + "\n\n" + markdown,
+            calculation_date=date(2026, 8, 1),
+            template_tag="奇瑞",
+        )
+
+        project = result["project_experiences"][0]
+        self.assertIn("使用自动化平台执行回归测试", project["description"])
+        self.assertIn("跟踪缺陷并完成版本验收", project["description"])
+        self.assertNotIn("**工作业绩：**", project["description"])
+        self.assertEqual(
+            project["achievement"],
+            "完成三轮版本验收并推动关键问题闭环。",
+        )
 
     def test_chery_generated_sections_require_grounded_evidence(self) -> None:
         """奇瑞AI兜底内容必须带原文依据并明确记录人工确认。"""

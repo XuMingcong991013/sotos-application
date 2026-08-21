@@ -50,6 +50,12 @@ NO_REFERENCE_TEXT = {
     ),
 }
 
+EMAIL_PATTERN = re.compile(
+    r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+    flags=re.IGNORECASE,
+)
+EMAIL_REVIEW_MARKER = "<!-- EMAIL_REQUIRES_MANUAL_REVIEW -->"
+
 
 SYSTEM_PROMPT = """
 你是一个严格的文档结构恢复程序。
@@ -341,7 +347,7 @@ def extract_important_values(
 
     protected_patterns = [
         # 邮箱
-        r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+        EMAIL_PATTERN.pattern,
 
         # 中国大陆手机号
         r"(?<!\d)1[3-9]\d{9}(?!\d)",
@@ -428,6 +434,104 @@ def extract_important_values(
         )
 
     return Counter(values)
+
+
+def reconcile_email_identifiers(
+    original_markdown: str,
+    source_reference_text: str,
+) -> tuple[str, str, list[str], bool]:
+    """
+    使用原文件文本层保守校正 OCR 遗漏的邮箱分隔符。
+
+    仅当域名完全一致、本地部分忽略 ``._+-`` 后一致，且原文只有一个
+    对应候选时才修改。多个候选无法安全归属时，从 LLM 输入中移除冲突
+    邮箱并写入“待补充”，确保最终 Word 和补充清单能向用户暴露问题。
+    """
+
+    source_emails = list(
+        dict.fromkeys(
+            EMAIL_PATTERN.findall(source_reference_text)
+        )
+    )
+    ocr_emails = list(
+        dict.fromkeys(
+            EMAIL_PATTERN.findall(original_markdown)
+        )
+    )
+
+    corrected_markdown = original_markdown
+    corrected_reference_text = source_reference_text
+    messages = []
+    requires_manual_review = False
+
+    def comparable_local_part(value: str) -> str:
+        """生成仅用于邮箱候选匹配的保守本地部分。"""
+
+        return re.sub(r"[._+-]", "", value).lower()
+
+    for ocr_email in ocr_emails:
+        ocr_local, ocr_domain = ocr_email.rsplit("@", 1)
+        candidates = []
+
+        for source_email in source_emails:
+            source_local, source_domain = source_email.rsplit("@", 1)
+            if source_domain.lower() != ocr_domain.lower():
+                continue
+            if (
+                comparable_local_part(source_local)
+                == comparable_local_part(ocr_local)
+            ):
+                candidates.append(source_email)
+
+        candidates = list(dict.fromkeys(candidates))
+        exact_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.lower() == ocr_email.lower()
+        ]
+
+        # 原文存在完全相同的邮箱时，OCR值已有直接证据，无需纠正。
+        if exact_candidates:
+            continue
+
+        if len(candidates) == 1:
+            source_email = candidates[0]
+            corrected_markdown = re.sub(
+                re.escape(ocr_email),
+                lambda _match: source_email,
+                corrected_markdown,
+                flags=re.IGNORECASE,
+            )
+            messages.append(
+                "邮箱已根据原文件文本层校正："
+                f"{ocr_email} -> {source_email}"
+            )
+        elif len(candidates) > 1:
+            requires_manual_review = True
+            corrected_markdown = re.sub(
+                re.escape(ocr_email),
+                "待补充",
+                corrected_markdown,
+                flags=re.IGNORECASE,
+            )
+            for source_email in candidates:
+                corrected_reference_text = re.sub(
+                    re.escape(source_email),
+                    "待补充",
+                    corrected_reference_text,
+                    flags=re.IGNORECASE,
+                )
+            messages.append(
+                "邮箱候选存在歧义，已转为用户可见的待补充项："
+                f"OCR={ocr_email}，原文候选={candidates}"
+            )
+
+    return (
+        corrected_markdown,
+        corrected_reference_text,
+        messages,
+        requires_manual_review,
+    )
 
 
 def validate_result(
@@ -685,6 +789,21 @@ def RestoreMarkdown(
         )
     )
 
+    (
+        original_markdown,
+        source_reference_text,
+        reconciliation_messages,
+        email_requires_manual_review,
+    ) = (
+        reconcile_email_identifiers(
+            original_markdown=original_markdown,
+            source_reference_text=source_reference_text,
+        )
+    )
+
+    for message in reconciliation_messages:
+        print(f"    {message}")
+
     print("    正在调用 LLM 恢复 Markdown 结构……")
 
     restored_markdown = call_llm_restore(
@@ -694,6 +813,14 @@ def RestoreMarkdown(
         model=model,
         api_key=api_key,
     )
+
+    if email_requires_manual_review:
+        restored_markdown = (
+            restored_markdown.rstrip()
+            + "\n\n"
+            + EMAIL_REVIEW_MARKER
+            + "\n"
+        )
 
     print("    正在检查关键数据是否被修改……")
 
